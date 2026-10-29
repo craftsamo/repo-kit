@@ -10,6 +10,10 @@ export interface Command {
 
 /** Every command, by its words on the command line. */
 export const commands: Record<string, Command> = {
+  "agents sync": {
+    summary: "Install the shared agents and skills for each AI coding tool",
+    load: () => import("./agents/sync.mts"),
+  },
   "ci opencode": {
     summary: "Run a step of the /oc agent workflow (used by the workflow)",
     load: () => import("./ci/opencode/main.mts"),
