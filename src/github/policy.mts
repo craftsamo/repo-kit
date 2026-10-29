@@ -615,6 +615,16 @@ function mapRestrictions(
   };
 }
 
+// GitHub returns the allowed patterns in an order of its own, while setup
+// sends them sorted, so the current list is sorted before the comparison.
+export function normalizeSelectedActions(
+  state: SelectedActionsState,
+): SelectedActionsState {
+  return state.patterns_allowed
+    ? { ...state, patterns_allowed: [...state.patterns_allowed].sort() }
+    : state;
+}
+
 export function diffObject<Current extends object, Desired extends object>(
   current: Current | undefined,
   desired: Desired,

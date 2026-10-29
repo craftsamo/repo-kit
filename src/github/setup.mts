@@ -24,6 +24,7 @@ import {
   buildSecurityAndAnalysis,
   diffObject,
   MODEL_VARIABLES,
+  normalizeSelectedActions,
   parseArguments,
   planReleaseKey,
   RELEASE_KEY_SECRET,
@@ -749,7 +750,10 @@ export async function setupRepository(args: SetupArguments): Promise<void> {
     );
     printDiff(
       "Selected actions",
-      diffObject(actionsState.selectedActions, actionsSettings.selectedActions),
+      diffObject(
+        normalizeSelectedActions(actionsState.selectedActions),
+        actionsSettings.selectedActions,
+      ),
     );
     printDiff(
       "Workflow token permissions",
