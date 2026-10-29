@@ -1,0 +1,16 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "providers": {
+    "openrouter": {
+      "body": {
+        "provider": {
+          "zdr": true,
+          "data_collection": "deny"
+        }
+      },
+      "models": {
+        "apodex/apodex-1.1-mini:free": {}
+      }
+    }
+  }
+}

@@ -9,7 +9,12 @@ export interface Command {
 }
 
 /** Every command, by its words on the command line. */
-export const commands: Record<string, Command> = {};
+export const commands: Record<string, Command> = {
+  "ci opencode": {
+    summary: "Run a step of the /oc agent workflow (used by the workflow)",
+    load: () => import("./ci/opencode/main.mts"),
+  },
+};
 
 export function usage(): string {
   const names = Object.keys(commands);

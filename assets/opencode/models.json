@@ -1,0 +1,11 @@
+{
+  "source": "https://opencode.ai/docs/zen/ and https://openrouter.ai/api/v1/endpoints/zdr",
+  "checkedAt": "2026-10-10",
+  "policy": "Free models whose providers neither retain nor train on prompts. Order is the priority order. OpenRouter candidates are tried only when OPENROUTER_API_KEY is set, and opencode.json restricts OpenRouter to zero-data-retention endpoints.",
+  "candidates": [
+    "opencode/space-bunny-free",
+    "opencode/longcat-2.5-preview-free",
+    "opencode/step-5-preview-free",
+    "openrouter/apodex/apodex-1.1-mini:free"
+  ]
+}

@@ -1,0 +1,58 @@
+---
+description: "CI review agent: reviews a pull request and returns inline findings as JSON. Read-only."
+mode: primary
+# Prompt: OpenCode's built-in prompt plus instructions/review.md, which
+# plugins/instructions.ts adds. Keep this file's body empty.
+# The OpenCode free tier rejects requests whose core tools (edit, shell, ...)
+# were trimmed by deny rules, so those stay visible. Anything not allowed
+# below resolves to ask, which a non-interactive run always rejects.
+permissions:
+  - { action: "*", resource: "*", effect: ask }
+  # Code Mode can reach the network through fetch and ignores ask, so it is
+  # removed, as is the desktop browser. The free tier accepts their absence.
+  - { action: execute, resource: "*", effect: deny }
+  - { action: browser, resource: "*", effect: deny }
+  # Skills only add instructions to the context; any command they suggest
+  # still goes through the shell rules below.
+  - { action: skill, resource: "*", effect: allow }
+  # Subagents run with their own permissions, so only the CI subagents, whose
+  # rules are as strict as these, may be launched.
+  - { action: subagent, resource: "ci-explore", effect: allow }
+  - { action: subagent, resource: "ci-reviewer", effect: allow }
+  - { action: subagent, resource: "ci-reviewer-deep", effect: allow }
+  - { action: read, resource: "*", effect: allow }
+  - { action: read, resource: "*.env", effect: ask }
+  - { action: read, resource: "*.env.*", effect: ask }
+  - { action: read, resource: "*.env.example", effect: allow }
+  - { action: glob, resource: "*", effect: allow }
+  - { action: grep, resource: "*", effect: allow }
+  - { action: shell, resource: "git log*", effect: allow }
+  - { action: shell, resource: "git show*", effect: allow }
+  - { action: shell, resource: "git blame*", effect: allow }
+  - { action: shell, resource: "git status*", effect: allow }
+  - { action: shell, resource: "git ls-files*", effect: allow }
+  - { action: shell, resource: "git ls-tree*", effect: allow }
+  - { action: shell, resource: "git rev-parse*", effect: allow }
+  - { action: shell, resource: "git merge-base*", effect: allow }
+  # Given two paths, git diff reads files outside the repository, so it is
+  # only allowed against a pull request ref. The path rules below refuse the
+  # outside paths that could still switch it to comparing files.
+  - { action: shell, resource: "git diff refs/opencode/*", effect: allow }
+  - { action: shell, resource: "git diff * refs/opencode/*", effect: allow }
+  # Flags that write files or read outside the repository. "--con" also
+  # covers the abbreviations git accepts for blame --contents.
+  - { action: shell, resource: "git *--out*", effect: ask }
+  - { action: shell, resource: "git *--no-index*", effect: ask }
+  - { action: shell, resource: "git *--con*", effect: ask }
+  - { action: shell, resource: "git *--ext-diff*", effect: ask }
+  - { action: shell, resource: "git *--textconv*", effect: ask }
+  # A path outside the repository makes git diff compare files directly, so
+  # absolute, parent, and home paths, quoting, and expansions are refused.
+  - { action: shell, resource: "git * /*", effect: ask }
+  - { action: shell, resource: "git *=/*", effect: ask }
+  - { action: shell, resource: "git *../*", effect: ask }
+  - { action: shell, resource: "git * ~*", effect: ask }
+  - { action: shell, resource: 'git *"*', effect: ask }
+  - { action: shell, resource: "git *'*", effect: ask }
+  - { action: shell, resource: "git *$*", effect: ask }
+---
