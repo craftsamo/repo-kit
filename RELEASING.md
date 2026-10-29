@@ -36,5 +36,12 @@ where it is.
    ```
 
 3. On npmjs.com, under the package's settings, add a trusted publisher:
-   GitHub Actions, repository `craftsamo/repo-kit`, workflow `publish.yml`.
-   Later releases then need no npm token.
+   GitHub Actions, repository `craftsamo/repo-kit`, workflow `publish.yml`,
+   no environment, and turn on **Allow npm publish**. A new trusted publisher
+   may only stage a package unless that is on, and the Publish workflow runs
+   `npm publish`, which npm then refuses with `E403 OIDC permission denied
+for this action`. Later releases then need no npm token.
+
+If the npm job fails after the release is published, fix the cause and re-run
+only that job: the release and the version commit are already in place, and
+the job publishes the package and moves the major tag.
