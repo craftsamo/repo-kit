@@ -1,6 +1,6 @@
 {
   "name": "@craftsamo/repo-kit",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "description": "Repository setup, release automation and AI agent configuration for GitHub repositories.",
   "author": "craftsamo",
   "license": "MIT",
