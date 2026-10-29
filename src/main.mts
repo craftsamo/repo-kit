@@ -14,6 +14,14 @@ export const commands: Record<string, Command> = {
     summary: "Run a step of the /oc agent workflow (used by the workflow)",
     load: () => import("./ci/opencode/main.mts"),
   },
+  "setup github": {
+    summary: "Apply repository settings, labels and main protection",
+    load: () => import("./github/setup.mts"),
+  },
+  "setup secrets": {
+    summary: "Set provider keys or another repository or environment secret",
+    load: () => import("./github/secrets.mts"),
+  },
 };
 
 export function usage(): string {
