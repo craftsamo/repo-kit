@@ -94,9 +94,11 @@ jobs:
           lower() {
             [[ -n "$2" ]] && node --input-type=module -e 'import { isLowerVersion } from "./src/release/release.mts"; process.exit(isLowerVersion(process.argv[1], process.argv[2]) ? 0 : 1)' "$1" "$2"
           }
-          if lower "$version" "$latest"; then echo "npm-tag=maintenance"; else echo "npm-tag=latest"; fi >> "$GITHUB_OUTPUT"
-          if lower "$version" "$tagged"; then echo "move-major=false"; else echo "move-major=true"; fi >> "$GITHUB_OUTPUT"
-          echo "major=$major" >> "$GITHUB_OUTPUT"
+          {
+            if lower "$version" "$latest"; then echo "npm-tag=maintenance"; else echo "npm-tag=latest"; fi
+            if lower "$version" "$tagged"; then echo "move-major=false"; else echo "move-major=true"; fi
+            echo "major=$major"
+          } >> "$GITHUB_OUTPUT"
       - name: Install dependencies
         run: |
           corepack enable
