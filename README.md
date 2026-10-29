@@ -23,7 +23,10 @@ Node.js 24 or later is required.
 
 ## Commands
 
-Run `repo-kit --help` for the list.
+Run `repo-kit --help` for the list. Every command works on the repository it
+runs in: the top of the git worktree holding the current directory, or the
+directory named by `REPOSITORY_ROOT`. Commands that reach GitHub use the
+[GitHub CLI](https://cli.github.com/), authenticated as you.
 
 ## License
 
