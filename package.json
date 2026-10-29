@@ -1,0 +1,38 @@
+{
+  "name": "@craftsamo/repo-kit",
+  "version": "0.0.0",
+  "description": "Repository setup, release automation and AI agent configuration for GitHub repositories.",
+  "author": "craftsamo",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/craftsamo/repo-kit.git"
+  },
+  "homepage": "https://github.com/craftsamo/repo-kit#readme",
+  "bugs": "https://github.com/craftsamo/repo-kit/issues",
+  "type": "module",
+  "bin": {
+    "repo-kit": "dist/cli.mjs"
+  },
+  "files": [
+    "assets",
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"test/**/*.test.mjs\"",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepack": "pnpm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.2",
+    "prettier": "3.9.10",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@11.5.3"
+}

@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Use Node.js 24.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          package-manager-cache: false
+      - name: Enable pnpm
+        run: corepack enable
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check formatting
+        run: pnpm run format:check
+      - name: Typecheck
+        run: pnpm run typecheck
+      - name: Test
+        run: pnpm test
+      # The published package runs from dist/ inside node_modules, where Node
+      # does not strip types, so install the packed tarball and run it there.
+      - name: Run the packed package
+        run: |
+          pnpm pack --pack-destination "$RUNNER_TEMP"
+          consumer="$RUNNER_TEMP/consumer"
+          mkdir "$consumer"
+          cd "$consumer"
+          npm init --yes >/dev/null
+          npm install --no-audit --no-fund "$RUNNER_TEMP"/craftsamo-repo-kit-*.tgz
+          npx --no-install repo-kit --version
