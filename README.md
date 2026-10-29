@@ -133,8 +133,9 @@ Changes collect in one draft release until you publish it.
   a `chore(release): set the version to <version>` commit and publishes the
   draft on that commit, so the tag names a commit carrying its version. It
   refuses while `main` has commits the draft does not list yet.
-- `release sync [--version <version>]` only sets the version on `main`, to the
-  draft's or the given one, and never moves it back.
+- `release sync [--version <version> | --tag <tag>]` only sets the version on
+  `main`, to the draft's, the given one or the one a release tag names, and
+  never moves it back.
 
 The notes come from `.github/release-notes.json`. Without one, every pull
 request goes under one section as a patch, tags are `v<version>`, and a

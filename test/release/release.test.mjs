@@ -154,6 +154,17 @@ describe("parseSyncArguments", () => {
     );
     assert.throws(() => parseSyncArguments(["--force"]), /Unknown argument/);
   });
+
+  it("takes the tag of a published release instead of a version", () => {
+    assert.deepEqual(parseSyncArguments(["--tag", "v0.11.0"]), {
+      tag: "v0.11.0",
+    });
+    assert.throws(() => parseSyncArguments(["--tag"]), /--tag requires/);
+    assert.throws(
+      () => parseSyncArguments(["--tag", "v1.0.0", "--version", "1.0.0"]),
+      /either --version or --tag/,
+    );
+  });
 });
 
 describe("parsePublishArguments", () => {

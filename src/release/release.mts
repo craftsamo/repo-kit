@@ -173,9 +173,13 @@ export function parsePublishArguments(argv: string[]): { dryRun: boolean } {
   return { dryRun };
 }
 
-export function parseSyncArguments(argv: string[]): { version?: string } {
+export function parseSyncArguments(argv: string[]): {
+  version?: string;
+  tag?: string;
+} {
   const values = [...argv];
   let version: string | undefined;
+  let tag: string | undefined;
   while (values.length > 0) {
     const value = values.shift();
     if (value === "--version") {
@@ -183,9 +187,30 @@ export function parseSyncArguments(argv: string[]): { version?: string } {
       if (!version || !VERSION.test(version)) {
         throw new UsageError("--version requires <major>.<minor>.<patch>.");
       }
+    } else if (value === "--tag") {
+      tag = values.shift();
+      if (!tag) throw new UsageError("--tag requires a release tag.");
     } else throw new UsageError(`Unknown argument: ${value}`);
   }
-  return version === undefined ? {} : { version };
+  if (version !== undefined && tag !== undefined) {
+    throw new UsageError("Use either --version or --tag, not both.");
+  }
+  return {
+    ...(version === undefined ? {} : { version }),
+    ...(tag === undefined ? {} : { tag }),
+  };
+}
+
+/** The version a release tag names, with the configured tag prefix. */
+function versionOfReleaseTag(tag: string): string {
+  const config = readNotesConfig();
+  const version = versionOfTag(tag, config);
+  if (version === undefined) {
+    throw new Error(
+      `The tag "${tag}" is not ${config.tagPrefix}<major>.<minor>.<patch>.`,
+    );
+  }
+  return version;
 }
 
 function git(args: string[], cwd: string = repositoryRoot()): string {
@@ -265,15 +290,17 @@ function readDraft(repository: string): { version: string; draft: Release } {
 
 /**
  * Set the root package version on main to the draft release's, without
- * publishing it. With --version, the version is given (the Publish Release
- * workflow passes the one a release was just published with) and the
- * repository root is the checkout of main to commit in; a version lower than
- * main's is left alone, so a release published for an older line does not
- * move main back. Without it, the draft is read from GitHub and the commit is
- * made in a temporary worktree, so the checked-out branch is left alone.
+ * publishing it. With --version, or --tag for the tag of a release just
+ * published, the version is given and the repository root is the checkout of
+ * main to commit in; a version lower than main's is left alone, so a release
+ * published for an older line does not move main back. Without them, the
+ * draft is read from GitHub and the commit is made in a temporary worktree,
+ * so the checked-out branch is left alone.
  */
 export function sync(argv: string[]): void {
-  const { version: given } = parseSyncArguments(argv);
+  const args = parseSyncArguments(argv);
+  const given =
+    args.tag === undefined ? args.version : versionOfReleaseTag(args.tag);
   if (given !== undefined) {
     const current = currentVersion(
       readFileSync(path.join(repositoryRoot(), "package.json"), "utf8"),
