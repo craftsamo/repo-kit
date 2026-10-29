@@ -12,6 +12,7 @@ import {
   buildSecurityAndAnalysis,
   diffObject,
   MODEL_VARIABLES,
+  normalizeSelectedActions,
   parseArguments,
   planReleaseKey,
   PROVIDER_SECRETS,
@@ -477,5 +478,41 @@ describe("diffObject", () => {
       ),
       [{ key: "mode", current: "all", desired: "selected" }],
     );
+  });
+});
+
+describe("normalizeSelectedActions", () => {
+  it("reports no change when GitHub returns the patterns in another order", () => {
+    const desired = buildActionsSettings({
+      allowedActions: ["a/x@*", "b/y@*", "c/z@*"],
+    }).selectedActions;
+    const current = {
+      github_owned_allowed: true,
+      verified_allowed: false,
+      patterns_allowed: ["c/z@*", "a/x@*", "b/y@*"],
+    };
+    assert.deepEqual(
+      diffObject(normalizeSelectedActions(current), desired),
+      [],
+    );
+    assert.deepEqual(current.patterns_allowed, ["c/z@*", "a/x@*", "b/y@*"]);
+  });
+
+  it("still reports a pattern that is missing", () => {
+    const desired = buildActionsSettings({
+      allowedActions: ["a/x@*", "b/y@*"],
+    }).selectedActions;
+    const diff = diffObject(
+      normalizeSelectedActions({ patterns_allowed: ["b/y@*"] }),
+      desired,
+    );
+    assert.deepEqual(
+      diff.map(({ key }) => key),
+      ["github_owned_allowed", "verified_allowed", "patterns_allowed"],
+    );
+  });
+
+  it("leaves a state without patterns alone", () => {
+    assert.deepEqual(normalizeSelectedActions({}), {});
   });
 });
