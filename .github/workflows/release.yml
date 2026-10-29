@@ -1,0 +1,19 @@
+name: Release
+
+# Redrafts repo-kit's next release once CI has passed on main, with the
+# release-draft workflow repo-kit offers.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  draft:
+    permissions:
+      contents: write
+      pull-requests: read
+    uses: ./.github/workflows/release-draft.yml

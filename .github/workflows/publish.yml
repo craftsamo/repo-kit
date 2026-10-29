@@ -1,0 +1,115 @@
+name: Publish
+
+# Publishes repo-kit's draft release with the release-publish workflow
+# repo-kit offers, then the npm package and the major tag callers pin, such
+# as v1. Run it from the Actions tab. A release the job publishes uses
+# GITHUB_TOKEN and starts no other workflow, so npm follows in this one.
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  release:
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-publish.yml
+    secrets:
+      RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
+
+  npm:
+    name: Publish to npm
+    needs: release
+    if: >-
+      needs.release.result == 'success' &&
+      (github.event_name == 'workflow_dispatch' ||
+       !github.event.release.prerelease)
+    # One run at a time, so two releases cannot move the tags in the wrong
+    # order.
+    concurrency:
+      group: publish-npm
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # id-token for npm trusted publishing, which needs no npm token and adds
+    # a provenance statement; contents to move the major tag.
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EVENT_TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - name: Find the release
+        id: release
+        run: |
+          tag="${EVENT_TAG:-$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ steps.release.outputs.tag }}
+          persist-credentials: true
+      - name: Use Node.js 24.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      # A release published on the Releases page tags the commit before the
+      # version bump, whose package.json still names the previous version.
+      - name: Check the version
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          if [[ "v$version" != "$TAG" ]]; then
+            echo "::error::$TAG tags a commit whose package.json is at $version. Publish with this workflow from the Actions tab instead."
+            exit 1
+          fi
+      # An older version than npm's latest, or than the major tag's, is
+      # published without moving them, so neither ever goes back. Only a
+      # package or tag that does not exist yet counts as no version; any
+      # other failure to read one stops the job.
+      - name: Compare with the current versions
+        id: compare
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          version="${TAG#v}"
+          major="${TAG%%.*}"
+          errors="$RUNNER_TEMP/compare-errors"
+          if ! latest="$(npm view @craftsamo/repo-kit version 2>"$errors")"; then
+            grep -q E404 "$errors" || { cat "$errors" >&2; exit 1; }
+            latest=""
+          fi
+          if manifest="$(gh api "repos/$GITHUB_REPOSITORY/contents/package.json?ref=$major" --jq .content 2>"$errors")"; then
+            tagged="$(base64 --decode <<<"$manifest" | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')"
+          else
+            grep -q "HTTP 404" "$errors" || { cat "$errors" >&2; exit 1; }
+            tagged=""
+          fi
+          lower() {
+            [[ -n "$2" ]] && node --input-type=module -e 'import { isLowerVersion } from "./src/release/release.mts"; process.exit(isLowerVersion(process.argv[1], process.argv[2]) ? 0 : 1)' "$1" "$2"
+          }
+          if lower "$version" "$latest"; then echo "npm-tag=maintenance"; else echo "npm-tag=latest"; fi >> "$GITHUB_OUTPUT"
+          if lower "$version" "$tagged"; then echo "move-major=false"; else echo "move-major=true"; fi >> "$GITHUB_OUTPUT"
+          echo "major=$major" >> "$GITHUB_OUTPUT"
+      - name: Install dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+      - name: Publish the package
+        env:
+          NPM_TAG: ${{ steps.compare.outputs.npm-tag }}
+        run: npm publish --tag "$NPM_TAG"
+      - name: Move the major tag
+        if: steps.compare.outputs.move-major == 'true'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          MAJOR: ${{ steps.compare.outputs.major }}
+        run: |
+          git tag --force "$MAJOR" "$TAG^{commit}"
+          git push --force origin "refs/tags/$MAJOR"
