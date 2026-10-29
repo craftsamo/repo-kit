@@ -1,0 +1,75 @@
+name: Draft release
+
+# Writes the draft of the caller's next release with `repo-kit release draft`.
+# Call it once CI has passed on main, so the draft never describes a state of
+# main that failed its checks:
+#
+#   on:
+#     workflow_run:
+#       workflows: [Tests]
+#       types: [completed]
+#       branches: [main]
+#   jobs:
+#     draft:
+#       permissions:
+#         contents: write
+#         pull-requests: read
+#       uses: craftsamo/repo-kit/.github/workflows/release-draft.yml@v1
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        description: Commit the draft targets; the commit CI passed on by default
+        type: string
+        default: ""
+
+jobs:
+  draft:
+    name: Draft release
+    # From a workflow_run, only a successful run of main itself redrafts: the
+    # branches filter matches the head branch's name, so a pull request from
+    # a fork's own main would pass it.
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.event != 'pull_request' &&
+       github.event.workflow_run.conclusion == 'success')
+    # Shared with the publish job of release-publish.yml, so a redraft never
+    # writes the draft while it is being published. A newer redraft replaces
+    # one still waiting, since each rebuilds the draft from main.
+    concurrency:
+      group: release-draft
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY_ROOT: ${{ github.workspace }}/repository
+    steps:
+      - name: Check out repo-kit
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: repo-kit
+          persist-credentials: false
+      - name: Use Node.js 24.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          package-manager-cache: false
+      # The whole history and the tags, to find the commits since the last
+      # release.
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          path: repository
+          fetch-depth: 0
+      - name: Draft the release
+        env:
+          TARGET: ${{ inputs.target || github.event.workflow_run.head_sha || github.sha }}
+        run: node "$GITHUB_WORKSPACE/repo-kit/src/cli.mts" release draft --target "$TARGET"

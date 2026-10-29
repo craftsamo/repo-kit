@@ -1,0 +1,165 @@
+name: OpenCode
+
+# Answers `/oc [plan|build|review|debug] <instruction>` (or `/opencode`)
+# comments on the caller's issues and pull requests with an OpenCode agent.
+# Call it from a workflow of your own; the calling job grants what the build
+# agent needs, and each job here keeps only what it uses:
+#
+#   on:
+#     issue_comment:
+#       types: [created]
+#     pull_request_review_comment:
+#       types: [created]
+#   permissions: {}
+#   jobs:
+#     opencode:
+#       permissions:
+#         actions: write
+#         contents: write
+#         issues: write
+#         pull-requests: write
+#       uses: craftsamo/repo-kit/.github/workflows/opencode.yml@v1
+#       with:
+#         ci-workflow: tests.yml
+#       secrets:
+#         OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+#
+# Pass the provider keys you use. Repository variables OPENCODE_MODEL and
+# OPENCODE_MODEL_<AGENT> choose the models; without them, the free defaults
+# of repo-kit are tried in order.
+
+on:
+  workflow_call:
+    inputs:
+      ci-workflow:
+        description: Workflow file that build starts on the branch it pushes
+        type: string
+        default: tests.yml
+      opencode-version:
+        description: Version of the OpenCode CLI to run
+        type: string
+        default: 2.0.26
+    secrets:
+      OPENCODE_API_KEY:
+        required: false
+      OPENAI_API_KEY:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+      OPENROUTER_API_KEY:
+        required: false
+
+jobs:
+  # Picks the agent before any token with write access exists, so only build
+  # requests get one. It reads only the comment, so it checks out repo-kit
+  # alone.
+  route:
+    name: Route
+    # Only people with write access can run the agent and spend the model
+    # budget. A quote reply puts the command after the quote, so this is a
+    # coarse filter; the route step decides whether it is a command.
+    if: >-
+      github.event.comment.user.type != 'Bot' &&
+      (contains(github.event.comment.body, '/oc') ||
+       contains(github.event.comment.body, '/opencode')) &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      agent: ${{ steps.route.outputs.agent }}
+    steps:
+      - &checkout-kit
+        name: Check out repo-kit
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: repo-kit
+          persist-credentials: false
+      - &setup-node
+        name: Use Node.js 24.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          package-manager-cache: false
+      - name: Route request
+        id: route
+        run: node "$GITHUB_WORKSPACE/repo-kit/src/cli.mts" ci opencode route
+
+  answer:
+    name: Answer
+    needs: route
+    if: needs.route.outputs.agent != '' && needs.route.outputs.agent != 'build'
+    concurrency: &concurrency
+      group: opencode-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    env: &env
+      REPOSITORY_ROOT: ${{ github.workspace }}/repository
+    steps: &agent-steps
+      - *checkout-kit
+      - *setup-node
+      # The default branch supplies the repository's instructions and skills,
+      # so a pull request cannot change the instructions its own run follows.
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: repository
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare request
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node "$GITHUB_WORKSPACE/repo-kit/src/cli.mts" ci opencode prepare
+      - name: Install OpenCode
+        if: steps.prepare.outputs.agent != ''
+        env:
+          OPENCODE_VERSION: ${{ inputs.opencode-version }}
+        run: npm install --global "@opencode/cli@${OPENCODE_VERSION}"
+      # No GitHub token in this step: the agent only reads and edits files.
+      - name: Run agent
+        if: steps.prepare.outputs.agent != ''
+        env:
+          OPENCODE_MODEL: ${{ vars.OPENCODE_MODEL }}
+          OPENCODE_MODEL_PLAN: ${{ vars.OPENCODE_MODEL_PLAN }}
+          OPENCODE_MODEL_BUILD: ${{ vars.OPENCODE_MODEL_BUILD }}
+          OPENCODE_MODEL_REVIEW: ${{ vars.OPENCODE_MODEL_REVIEW }}
+          OPENCODE_MODEL_DEBUG: ${{ vars.OPENCODE_MODEL_DEBUG }}
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: node "$GITHUB_WORKSPACE/repo-kit/src/cli.mts" ci opencode run
+      - name: Publish result
+        if: always() && steps.prepare.outputs.agent != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CI_WORKFLOW: ${{ inputs.ci-workflow }}
+        run: node "$GITHUB_WORKSPACE/repo-kit/src/cli.mts" ci opencode publish
+
+  build:
+    name: Build
+    needs: route
+    if: needs.route.outputs.agent == 'build'
+    concurrency: *concurrency
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # contents and pull-requests to push and open the pull request, actions
+    # to start the CI workflow, which pushes made with this token do not
+    # trigger.
+    permissions:
+      actions: write
+      contents: write
+      issues: write
+      pull-requests: write
+    env: *env
+    steps: *agent-steps

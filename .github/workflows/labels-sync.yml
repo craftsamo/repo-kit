@@ -1,0 +1,54 @@
+name: Sync labels
+
+# Makes the caller's labels the ones its .github/labels.yml declares, with
+# `repo-kit labels sync`. Call it from a workflow of your own:
+#
+#   on:
+#     workflow_dispatch:
+#     push:
+#       branches: [main]
+#       paths: [.github/labels.yml]
+#   jobs:
+#     labels:
+#       permissions:
+#         contents: read
+#         issues: write
+#       uses: craftsamo/repo-kit/.github/workflows/labels-sync.yml@v1
+
+on:
+  workflow_call:
+
+jobs:
+  sync:
+    name: Sync labels
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY_ROOT: ${{ github.workspace }}/repository
+    steps:
+      # repo-kit runs at the commit of this workflow file, the ref the caller
+      # pinned, beside the caller's repository.
+      - name: Check out repo-kit
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: repo-kit
+          persist-credentials: false
+      - name: Use Node.js 24.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          package-manager-cache: false
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          path: repository
+          sparse-checkout: .github
+          persist-credentials: false
+      - name: Sync labels
+        run: node "$GITHUB_WORKSPACE/repo-kit/src/cli.mts" labels sync

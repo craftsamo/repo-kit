@@ -31,6 +31,10 @@ released together from this repository.
   registered in `src/main.mts`.
 - Sources use only erasable TypeScript syntax and import siblings with their
   `.mts` extension; the build rewrites them to `.mjs`.
+- Reusable workflows check out repo-kit with `job.workflow_repository` and
+  `job.workflow_sha` and run `src/cli.mts` from it, use GitHub-owned actions
+  only, and never call another workflow with `./`, which resolves to the
+  caller's repository. `test/workflows.test.mjs` checks this.
 
 ## Commands
 

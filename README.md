@@ -160,6 +160,58 @@ lists its labels and the increment it raises:
 A pull request goes under the first category with one of its labels, and the
 category without labels takes the rest.
 
+## Reusable workflows
+
+Call them from workflows of your own, pinned to a release tag. Each one runs
+repo-kit at the commit of that tag beside a checkout of your repository, uses
+only GitHub-owned actions, and keeps per job only the permissions it needs of
+those the calling job grants. The header of each file shows a complete
+caller.
+
+| Workflow              | Calls                            | Calling job grants                                                    |
+| --------------------- | -------------------------------- | --------------------------------------------------------------------- |
+| `opencode.yml`        | the `/oc` agents on comments     | `actions`, `contents`, `issues`, `pull-requests`: write               |
+| `labels-sync.yml`     | `labels sync`                    | `contents: read`, `issues: write`                                     |
+| `release-draft.yml`   | `release draft` after CI on main | `contents: write`, `pull-requests: read`                              |
+| `release-publish.yml` | `release publish` / `sync`       | `contents: write`, and the `RELEASE_DEPLOY_KEY` secret passed by name |
+
+```yaml
+jobs:
+  opencode:
+    permissions:
+      actions: write
+      contents: write
+      issues: write
+      pull-requests: write
+    uses: craftsamo/repo-kit/.github/workflows/opencode.yml@v1
+    secrets:
+      OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+```
+
+Secrets are passed by name, since `secrets: inherit` works only within an
+organization or enterprise. `setup github` allows each workflow your
+repository calls, as it reads them from your workflows.
+
+### `/oc` agents
+
+Comment `/oc <instruction>` (or `/opencode`) on an issue or pull request, or
+`/oc plan|build|review|debug <instruction>` for a specific agent. Only owners,
+members and collaborators can run them.
+
+- `plan`, `review` and `debug` read the repository and answer; `review`
+  comments on the pull request's lines.
+- `build` edits a clone, commits and pushes to the pull request's branch or a
+  new one with a pull request, then starts the `ci-workflow` input's workflow,
+  `tests.yml` by default. It never pushes workflow files or to a fork.
+- The agents follow the repository's `AGENTS.md` and `.opencode/skills`:
+  `plan`, `review` and `debug` those of the default branch, `build` those of
+  the branch it edits. A tree that configures an agent with the id of a CI
+  agent stops the run, since it could widen the agent's permissions.
+- Models: the `OPENCODE_MODEL` and `OPENCODE_MODEL_<AGENT>` repository
+  variables, comma-separated `provider/model#variant` candidates tried in
+  order; without them, repo-kit's free defaults. `setup github` offers to set
+  them and `setup secrets` the provider keys.
+
 ## License
 
 [MIT](LICENSE)

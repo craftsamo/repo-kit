@@ -1,0 +1,108 @@
+name: Publish release
+
+# Publishes the caller's draft release with `repo-kit release publish`, or
+# follows a release published on the Releases page with `release sync`. The
+# version bump is pushed to main with the release deploy key, which
+# `repo-kit setup github` creates and lets bypass the protection of main:
+#
+#   on:
+#     workflow_dispatch:
+#     release:
+#       types: [published]
+#   jobs:
+#     publish:
+#       permissions:
+#         contents: write
+#       uses: craftsamo/repo-kit/.github/workflows/release-publish.yml@v1
+#       secrets:
+#         RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
+
+on:
+  workflow_call:
+    secrets:
+      RELEASE_DEPLOY_KEY:
+        description: Private half of the deploy key that may push to main
+        required: false
+
+jobs:
+  # Run from the Actions tab: set the version on main to the draft's with a
+  # commit, then publish the draft on that commit, so the tag names a commit
+  # that carries its version.
+  publish:
+    name: Publish release
+    if: github.event_name == 'workflow_dispatch'
+    # Shared with release-draft.yml, so a redraft never writes the draft while
+    # it is being published.
+    concurrency:
+      group: release-draft
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      # A secret cannot appear in a step's if, so whether it is set is read
+      # here once.
+      RELEASE_KEY_SET: ${{ secrets.RELEASE_DEPLOY_KEY != '' }}
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY_ROOT: ${{ github.workspace }}/repository
+    steps: &publish-steps
+      - name: Require the release deploy key
+        if: env.RELEASE_KEY_SET != 'true'
+        run: |
+          echo "::error::RELEASE_DEPLOY_KEY is not passed, so the version bump cannot be pushed to main. Create it with repo-kit setup github, or publish from a checkout with repo-kit release publish."
+          exit 1
+      - name: Check out repo-kit
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: repo-kit
+          persist-credentials: false
+      - name: Use Node.js 24.x
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.x
+          package-manager-cache: false
+      # The history and the tags check that the draft lists everything on
+      # main; the deploy key pushes the version bump.
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          path: repository
+          fetch-depth: 0
+          ssh-key: ${{ secrets.RELEASE_DEPLOY_KEY }}
+      - name: Use the bot identity
+        working-directory: repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Run the release step
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [[ -n "$TAG" ]]; then
+            node "$GITHUB_WORKSPACE/repo-kit/src/cli.mts" release sync --tag "$TAG"
+          else
+            node "$GITHUB_WORKSPACE/repo-kit/src/cli.mts" release publish
+          fi
+
+  # A release published on the Releases page tags the commit the draft
+  # targeted, before any version bump; set the version on main afterwards.
+  # A prerelease does not move main, nor does a release for an older line.
+  set_version:
+    name: Set the version on main
+    if: github.event_name == 'release' && !github.event.release.prerelease
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.event.release.tag_name }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      RELEASE_KEY_SET: ${{ secrets.RELEASE_DEPLOY_KEY != '' }}
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY_ROOT: ${{ github.workspace }}/repository
+    steps: *publish-steps
