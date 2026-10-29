@@ -92,6 +92,18 @@ own there. Run it after every install:
   is not committed, so nothing needs adding to `.gitignore`.
 - The shared agents name no model, so each tool uses its own.
 
+### `check commit-size`
+
+A pre-commit check that fails when the staged changes exceed 500 reviewable
+changed lines, so commits stay small enough to review. Lockfiles, binary
+files and files marked `linguist-generated` in `.gitattributes` do not count.
+`--max <lines>` or `MAX_COMMIT_CHANGED_LINES` sets another limit.
+
+```sh
+# .husky/pre-commit
+repo-kit check commit-size
+```
+
 ### `labels sync`
 
 Makes the repository's labels the ones `.github/labels.yml` declares: it

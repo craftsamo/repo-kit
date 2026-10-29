@@ -14,6 +14,10 @@ export const commands: Record<string, Command> = {
     summary: "Install the shared agents and skills for each AI coding tool",
     load: () => import("./agents/sync.mts"),
   },
+  "check commit-size": {
+    summary: "Fail when the staged changes exceed the reviewable-size limit",
+    load: () => import("./hooks/commit-size.mts"),
+  },
   "ci opencode": {
     summary: "Run a step of the /oc agent workflow (used by the workflow)",
     load: () => import("./ci/opencode/main.mts"),
