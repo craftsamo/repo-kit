@@ -14,6 +14,20 @@ export const commands: Record<string, Command> = {
     summary: "Run a step of the /oc agent workflow (used by the workflow)",
     load: () => import("./ci/opencode/main.mts"),
   },
+  "release draft": {
+    summary: "Draft the next release from the pull requests merged since",
+    load: async () => ({ run: (await import("./release/release.mts")).draft }),
+  },
+  "release publish": {
+    summary: "Set the version on main to the draft's and publish the draft",
+    load: async () => ({
+      run: (await import("./release/release.mts")).publish,
+    }),
+  },
+  "release sync": {
+    summary: "Set the version on main without publishing",
+    load: async () => ({ run: (await import("./release/release.mts")).sync }),
+  },
   "setup github": {
     summary: "Apply repository settings, labels and main protection",
     load: () => import("./github/setup.mts"),

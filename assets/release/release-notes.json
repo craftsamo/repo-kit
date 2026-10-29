@@ -1,0 +1,8 @@
+{
+  "name": "v{version}",
+  "tagPrefix": "v",
+  "exclude": ["skip-changelog"],
+  "major": [],
+  "titleEscapes": "\\<*_&",
+  "categories": [{ "title": "Changes" }]
+}

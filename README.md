@@ -71,6 +71,45 @@ repo-kit setup secrets --environment production --name DATABASE_URL
 
 A missing environment is created; an existing one keeps its protection rules.
 
+### `release draft`, `release publish`, `release sync`
+
+Releases are GitHub Releases whose version lives in the root `package.json`.
+Changes collect in one draft release until you publish it.
+
+- `release draft [--target <sha>] [--dry-run]` writes the draft from the pull
+  requests whose merge commit landed on `main` since the last release, so
+  every layer of a stacked pull request counts. It works out the next version
+  from their labels and leaves the version on `main` alone.
+- `release publish [--dry-run]` sets the version on `main` to the draft's with
+  a `chore(release): set the version to <version>` commit and publishes the
+  draft on that commit, so the tag names a commit carrying its version. It
+  refuses while `main` has commits the draft does not list yet.
+- `release sync [--version <version>]` only sets the version on `main`, to the
+  draft's or the given one, and never moves it back.
+
+The notes come from `.github/release-notes.json`. Without one, every pull
+request goes under one section as a patch, tags are `v<version>`, and a
+`skip-changelog` label leaves a pull request out. With one, each category
+lists its labels and the increment it raises:
+
+```json
+{
+  "name": "v{version}",
+  "tagPrefix": "v",
+  "exclude": ["skip-changelog"],
+  "major": ["breaking"],
+  "titleEscapes": "\\<*_&",
+  "categories": [
+    { "title": "Features", "labels": ["feature"], "increment": "minor" },
+    { "title": "Fixes", "labels": ["bug"] },
+    { "title": "Other Changes" }
+  ]
+}
+```
+
+A pull request goes under the first category with one of its labels, and the
+category without labels takes the rest.
+
 ## License
 
 [MIT](LICENSE)

@@ -1,0 +1,37 @@
+{
+  "name": "v{version} 🚀",
+  "tagPrefix": "v",
+  "exclude": ["skip-changelog"],
+  "major": ["🌟major"],
+  "titleEscapes": "\\<*_&",
+  "categories": [
+    {
+      "title": "🚀 New Features",
+      "labels": ["🌱feature"],
+      "increment": "minor"
+    },
+    {
+      "title": "🐛 Bug Fixes",
+      "labels": ["🐛bug", "🐞hotfix"]
+    },
+    {
+      "title": "⚒️ Enhancement",
+      "labels": ["⚒️enhancement"]
+    },
+    {
+      "title": "📄 Documentation",
+      "labels": ["📝documentation"]
+    },
+    {
+      "title": "⬆️ Dependencies",
+      "labels": ["dependencies"]
+    },
+    {
+      "title": "🔧 Maintenance",
+      "labels": ["🔧maintenance"]
+    },
+    {
+      "title": "🧰 Other Changes"
+    }
+  ]
+}
