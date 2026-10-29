@@ -71,6 +71,22 @@ repo-kit setup secrets --environment production --name DATABASE_URL
 
 A missing environment is created; an existing one keeps its protection rules.
 
+### `labels sync`
+
+Makes the repository's labels the ones `.github/labels.yml` declares: it
+creates the missing ones, updates the changed ones and deletes the rest. A
+label whose name only changes case is renamed, keeping its issues and pull
+requests. `--dry-run` shows the changes, and `--repo <owner/name>` picks
+another repository.
+
+```yaml
+- name: bug
+  description: Something is not working
+  color: D73A4A
+```
+
+`setup github` applies the same labels.
+
 ### `release draft`, `release publish`, `release sync`
 
 Releases are GitHub Releases whose version lives in the root `package.json`.
