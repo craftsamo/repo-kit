@@ -360,6 +360,21 @@ describe("sync of a given version", () => {
       PACKAGE,
     );
   });
+
+  it("refuses to build", () => {
+    assert.throws(
+      () =>
+        sync([
+          "--version",
+          "1.1.0",
+          "--build-command",
+          "true",
+          "--artifact",
+          "dist",
+        ]),
+      /does not build/,
+    );
+  });
 });
 
 describe("commitsInRange", () => {

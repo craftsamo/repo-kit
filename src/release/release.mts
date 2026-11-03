@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import {
+  appendFileSync,
   existsSync,
   mkdtempSync,
   readFileSync,
@@ -200,6 +201,8 @@ export function unlistedCommits(log: string): string[] {
 
 interface ReleaseFlags {
   versionFiles: string[];
+  buildCommand?: string;
+  artifacts: string[];
 }
 
 /** A path the repository holds, as written relative to its root. */
@@ -214,6 +217,12 @@ function repositoryPath(value: string | undefined, flag: string): string {
   ) {
     throw new UsageError(
       `${flag} requires a path below the repository root, not "${value ?? ""}".`,
+    );
+  }
+  const [first] = normalized.split(path.sep);
+  if (first?.toLowerCase() === ".git") {
+    throw new UsageError(
+      `${flag} cannot take "${value}": .git holds the repository itself, not its files.`,
     );
   }
   return normalized;
@@ -237,20 +246,50 @@ function takeReleaseFlag(
       );
     }
     flags.versionFiles.push(file);
+  } else if (flag === "--artifact") {
+    flags.artifacts.push(repositoryPath(values.shift(), flag));
+  } else if (flag === "--build-command") {
+    const command = values.shift();
+    if (!command?.trim()) {
+      throw new UsageError("--build-command requires a command.");
+    }
+    if (flags.buildCommand !== undefined) {
+      throw new UsageError("Use --build-command once.");
+    }
+    flags.buildCommand = command;
   } else return false;
   return true;
 }
 
-/** The release options the flags give. */
+/** The release options the flags give; a build needs its artifacts, and they need a build. */
 function releaseOptions(flags: ReleaseFlags): ReleaseOptions {
-  return { versionFiles: [...new Set(flags.versionFiles)] };
+  const { buildCommand } = flags;
+  if (buildCommand !== undefined && flags.artifacts.length === 0) {
+    throw new UsageError(
+      "--build-command requires --artifact: the paths the build produces for the release.",
+    );
+  }
+  if (buildCommand === undefined && flags.artifacts.length > 0) {
+    throw new UsageError("--artifact requires --build-command.");
+  }
+  return {
+    versionFiles: [...new Set(flags.versionFiles)],
+    ...(buildCommand === undefined
+      ? {}
+      : {
+          build: {
+            command: buildCommand,
+            artifacts: [...new Set(flags.artifacts)],
+          },
+        }),
+  };
 }
 
 export function parsePublishArguments(
   argv: string[],
 ): { dryRun: boolean } & ReleaseOptions {
   const values = [...argv];
-  const flags: ReleaseFlags = { versionFiles: [] };
+  const flags: ReleaseFlags = { versionFiles: [], artifacts: [] };
   let dryRun = false;
   while (values.length > 0) {
     const value = values.shift();
@@ -268,7 +307,7 @@ export function parseSyncArguments(argv: string[]): {
   versionFiles: string[];
 } {
   const values = [...argv];
-  const flags: ReleaseFlags = { versionFiles: [] };
+  const flags: ReleaseFlags = { versionFiles: [], artifacts: [] };
   let version: string | undefined;
   let tag: string | undefined;
   while (values.length > 0) {
@@ -287,6 +326,11 @@ export function parseSyncArguments(argv: string[]): {
   }
   if (version !== undefined && tag !== undefined) {
     throw new UsageError("Use either --version or --tag, not both.");
+  }
+  if (flags.buildCommand !== undefined || flags.artifacts.length > 0) {
+    throw new UsageError(
+      "release sync does not build: it cannot move the tag of a release already published, as one published on the Releases page is. Build output reaches a release through release publish.",
+    );
   }
   return {
     ...(version === undefined ? {} : { version }),
@@ -512,7 +556,8 @@ function readDraft(repository: string): { version: string; draft: Release } {
  * published for an older line does not move main back. Without them, the
  * draft is read from GitHub and the commit is made in a temporary worktree,
  * so the checked-out branch is left alone. The files given with
- * --version-file get the version in the same commit.
+ * --version-file get the version in the same commit. It never builds: a
+ * release published on the Releases page has its tag already.
  */
 export function sync(argv: string[]): void {
   const args = parseSyncArguments(argv);
@@ -557,12 +602,71 @@ function targetCommit(target: string): string {
   ]);
 }
 
+/** Set a step output of the running workflow job, when there is one. */
+function setOutput(name: string, value: string): void {
+  const file = process.env.GITHUB_OUTPUT;
+  if (file) appendFileSync(file, `${name}=${value}\n`);
+}
+
+/**
+ * What to do when publishing the draft failed after its tag was pushed. The
+ * request may have gone through before the failure, and deleting the tag of a
+ * published release would break it, so the release is checked first.
+ */
+export function tagPushedMessage(repository: string, tag: string): string {
+  return [
+    `Pushed the tag ${tag}, but publishing the draft failed.`,
+    `Check the release first: gh release view ${tag} --repo ${repository} --json isDraft`,
+    "If it is published, leave the tag as it is.",
+    `Only if it is still a draft, delete the tag before publishing again: git push origin :refs/tags/${tag}`,
+  ].join("\n");
+}
+
+/**
+ * Publish the draft on `head`, the commit main ends at. With a release commit,
+ * no branch holds it, so the tag is pushed on it first to make it reachable
+ * for GitHub; the release then uses that tag. A failure to publish after the
+ * push leaves the tag, which the next run would refuse, so the error names it.
+ */
+function publishDraft(
+  repository: string,
+  draft: Release,
+  head: string,
+  release: string | undefined,
+): Release {
+  const endpoint = `/repos/${repository}/releases/${draft.id}`;
+  if (release === undefined) {
+    return api<Release>("PATCH", endpoint, {
+      target_commitish: head,
+      draft: false,
+    })!;
+  }
+  git(["push", "origin", `${release}:refs/tags/${draft.tag_name}`]);
+  console.log(
+    `Tagged ${draft.tag_name} on the release commit (${release.slice(0, 7)}) above ${head.slice(0, 7)}.`,
+  );
+  try {
+    return api<Release>("PATCH", endpoint, {
+      tag_name: draft.tag_name,
+      target_commitish: release,
+      draft: false,
+    })!;
+  } catch (error) {
+    throw new Error(
+      `${tagPushedMessage(repository, draft.tag_name)}\n${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
+}
+
 /**
  * Publish the draft release: set the version on main to the draft's with a
  * commit, then publish the draft on that commit, so the tag names a commit
- * that carries its version. It refuses while main has changes the draft does
- * not list yet, which the redraft after CI passes on main catches up on.
- * --dry-run checks and prints what it would do, without doing it.
+ * that carries its version. With --build-command and --artifact, the tag names
+ * a release commit above that one instead, which adds the build's artifacts.
+ * It refuses while main has changes the draft does not list yet, which the
+ * redraft after CI passes on main catches up on. --dry-run checks and prints
+ * what it would do, without doing it.
  */
 export function publish(argv: string[]): void {
   const { dryRun, ...options } = parsePublishArguments(argv);
@@ -608,20 +712,22 @@ export function publish(argv: string[]): void {
         `Would set the version in ${options.versionFiles.join(", ")} too.`,
       );
     }
+    if (options.build) {
+      console.log(
+        `Would build with \`${options.build.command}\` and tag ${draft.tag_name} on a release commit that adds ${options.build.artifacts.join(", ")} to it.`,
+      );
+    }
     return;
   }
-  const { pushed, head } = bumpMain(base, version, options);
+  const { pushed, head, release } = bumpMain(base, version, options);
   console.log(
     pushed
       ? `Set the version to ${version} on main (${head.slice(0, 7)}).`
       : `main is already at ${version} (${head.slice(0, 7)}).`,
   );
-  const published = api<Release>(
-    "PATCH",
-    `/repos/${repository}/releases/${draft.id}`,
-    { target_commitish: head, draft: false },
-  )!;
+  const published = publishDraft(repository, draft, head, release);
   console.log(`Published ${published.html_url}`);
+  setOutput("tag", published.tag_name);
 }
 
 export function parseDraftArguments(argv: string[]): {
