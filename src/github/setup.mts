@@ -19,6 +19,7 @@ import {
   buildCacheRetentionSettings,
   buildDependabotSettings,
   buildMainRuleset,
+  buildPrivateVulnerabilityReporting,
   buildRepositorySettings,
   buildRetentionSettings,
   buildSecurityAndAnalysis,
@@ -42,6 +43,7 @@ import type {
   CacheRetentionState,
   DependabotSettings,
   ObjectDiff,
+  PrivateVulnerabilityReportingSettings,
   ReleaseKeyPlan,
   ReleaseKeyState,
   RepositoryMetadata,
@@ -358,6 +360,36 @@ function applyDependabot(
     api("PUT", `/repos/${repository}/automated-security-fixes`);
   } else if (current.security_updates) {
     api("DELETE", `/repos/${repository}/automated-security-fixes`);
+  }
+}
+
+export function getPrivateVulnerabilityReporting(
+  repository: string,
+  request: ApiRequest = api,
+): PrivateVulnerabilityReportingSettings {
+  try {
+    const response = request<{ enabled?: boolean }>(
+      "GET",
+      `/repos/${repository}/private-vulnerability-reporting`,
+    );
+    return { enabled: Boolean(response?.enabled) };
+  } catch (error) {
+    if (isHttpStatus(error, 404)) return { enabled: false };
+    throw error;
+  }
+}
+
+export function applyPrivateVulnerabilityReporting(
+  repository: string,
+  request: ApiRequest = api,
+): void {
+  try {
+    request("PUT", `/repos/${repository}/private-vulnerability-reporting`);
+  } catch (error) {
+    if (!isHttpStatus(error, 403, 404, 422)) throw error;
+    console.warn(
+      "Private vulnerability reporting could not be enabled for this repository; an organization policy may block it. Skipped.",
+    );
   }
 }
 
@@ -765,6 +797,12 @@ export async function setupRepository(args: SetupArguments): Promise<void> {
     const securitySettings = buildSecurityAndAnalysis();
     const dependabotState = getDependabotState(repository);
     const dependabotSettings = buildDependabotSettings({ securityUpdates });
+    const reportingSettings = buildPrivateVulnerabilityReporting(
+      state.visibility,
+    );
+    const reportingState = reportingSettings
+      ? getPrivateVulnerabilityReporting(repository)
+      : undefined;
     const desiredLabels = readLabels();
     const labelChanges =
       desiredLabels && diffLabels(desiredLabels, getCurrentLabels(repository));
@@ -809,6 +847,16 @@ export async function setupRepository(args: SetupArguments): Promise<void> {
     }
     printDiff("Secret scanning", diffObject(securityState, securitySettings));
     printDiff("Dependabot", diffObject(dependabotState, dependabotSettings));
+    if (reportingSettings) {
+      printDiff(
+        "Private vulnerability reporting",
+        diffObject(reportingState, reportingSettings),
+      );
+    } else {
+      console.log(
+        "\nPrivate vulnerability reporting\n  Only public repositories offer it; skipped.",
+      );
+    }
     if (metadataResult.topics) {
       printDiff(
         "Repository topics",
@@ -871,6 +919,9 @@ export async function setupRepository(args: SetupArguments): Promise<void> {
     api("PATCH", `/repos/${repository}`, repositorySettings);
     applySecurityAndAnalysis(repository, securitySettings);
     applyDependabot(repository, dependabotState, dependabotSettings);
+    if (reportingSettings && reportingState && !reportingState.enabled) {
+      applyPrivateVulnerabilityReporting(repository);
+    }
     if (metadataResult.topics) {
       api("PUT", `/repos/${repository}/topics`, {
         names: metadataResult.topics,

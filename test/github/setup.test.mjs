@@ -7,6 +7,7 @@ import {
   buildCacheRetentionSettings,
   buildDependabotSettings,
   buildMainRuleset,
+  buildPrivateVulnerabilityReporting,
   buildRepositorySettings,
   buildRetentionSettings,
   buildSecurityAndAnalysis,
@@ -24,7 +25,9 @@ import { CommandError } from "../../src/github/gh.mts";
 import {
   applyActionsSettings,
   applyCacheRetention,
+  applyPrivateVulnerabilityReporting,
   getCacheRetentionState,
+  getPrivateVulnerabilityReporting,
   run,
 } from "../../src/github/setup.mts";
 
@@ -369,6 +372,67 @@ describe("security settings", () => {
     assert.equal(
       buildDependabotSettings({ securityUpdates: true }).security_updates,
       true,
+    );
+  });
+
+  it("offers private vulnerability reporting only on public repositories", () => {
+    assert.deepEqual(buildPrivateVulnerabilityReporting("public"), {
+      enabled: true,
+    });
+    assert.equal(buildPrivateVulnerabilityReporting("private"), undefined);
+    assert.equal(buildPrivateVulnerabilityReporting("internal"), undefined);
+  });
+
+  it("reads private vulnerability reporting state", () => {
+    assert.deepEqual(
+      getPrivateVulnerabilityReporting("owner/repo", () => ({ enabled: true })),
+      { enabled: true },
+    );
+    assert.deepEqual(
+      getPrivateVulnerabilityReporting("owner/repo", () => ({
+        enabled: false,
+      })),
+      { enabled: false },
+    );
+    assert.deepEqual(
+      getPrivateVulnerabilityReporting("owner/repo", () => {
+        throw httpError(404, "Not Found");
+      }),
+      { enabled: false },
+    );
+    assert.throws(
+      () =>
+        getPrivateVulnerabilityReporting("owner/repo", () => {
+          throw httpError(500, "Server Error");
+        }),
+      /Server Error/,
+    );
+  });
+
+  it("enables private vulnerability reporting", (t) => {
+    const calls = [];
+    applyPrivateVulnerabilityReporting("owner/repo", (method, endpoint) => {
+      calls.push([method, endpoint]);
+    });
+    assert.deepEqual(calls, [
+      ["PUT", "/repos/owner/repo/private-vulnerability-reporting"],
+    ]);
+
+    const warn = t.mock.method(console, "warn", () => {});
+    applyPrivateVulnerabilityReporting("owner/repo", () => {
+      throw httpError(422, "Unprocessable Entity");
+    });
+    assert.match(
+      warn.mock.calls[0].arguments[0],
+      /Private vulnerability reporting could not be enabled/,
+    );
+
+    assert.throws(
+      () =>
+        applyPrivateVulnerabilityReporting("owner/repo", () => {
+          throw httpError(500, "Server Error");
+        }),
+      /Server Error/,
     );
   });
 });

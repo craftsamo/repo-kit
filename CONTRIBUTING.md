@@ -81,8 +81,8 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org/):
 | `test`     | Tests only                                  |
 | `chore`    | Anything else, such as tooling or a version |
 
-The scope names the area, such as `setup`, `release`, `agents`, `labels` or
-`ci`. Keep each commit to one change that passes the checks on its own; the
+The scope names the area, such as `setup`, `community`, `release`, `agents`,
+`labels` or `ci`. Keep each commit to one change that passes the checks on its own; the
 body says why, when the subject cannot.
 
 ## Pull requests
