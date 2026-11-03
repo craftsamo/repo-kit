@@ -253,6 +253,22 @@ Secrets are passed by name, since `secrets: inherit` works only within an
 organization or enterprise. `setup github` allows each workflow your
 repository calls, as it reads them from your workflows.
 
+`release-publish.yml` takes inputs for the options of `release publish`, all
+empty or off by default:
+
+| Input               | Meaning                                                                                |
+| ------------------- | -------------------------------------------------------------------------------------- |
+| `version-files`     | `--version-file` for each file, one per line or comma-separated                        |
+| `build-command`     | `--build-command`; set it with `artifacts`                                             |
+| `artifacts`         | `--artifact` for each path, one per line or comma-separated                            |
+| `setup-pnpm`        | runs `corepack enable` so the build can use the pnpm your repository pins              |
+| `node-version-file` | file in your repository naming the Node.js version the build runs on (24.x by default) |
+
+Its `tag` output is the tag of the release published from the Actions tab, for
+a job that publishes the package from it; its header shows one. A release
+published on the Releases page runs `release sync` with `version-files`, skips
+the build with a warning, and has no `tag` output.
+
 ### `/oc` agents
 
 Comment `/oc <instruction>` (or `/opencode`) on an issue or pull request, or
