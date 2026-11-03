@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a vulnerability
+    url: https://github.com/craftsamo/repo-kit/security/advisories/new
+    about: Report it privately, never in a public issue. SECURITY.md says what counts.
+  - name: README
+    url: https://github.com/craftsamo/repo-kit#readme
+    about: How each command and workflow works, and the options it takes.

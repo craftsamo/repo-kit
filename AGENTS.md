@@ -35,6 +35,7 @@ released together from this repository.
   `job.workflow_sha` and run `src/cli.mts` from it, use GitHub-owned actions
   only, and never call another workflow with `./`, which resolves to the
   caller's repository. `test/workflows.test.mjs` checks this.
+- Commits and pull requests follow [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Commands
 
