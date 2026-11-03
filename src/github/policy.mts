@@ -128,6 +128,10 @@ export interface DependabotSettings {
   security_updates: boolean;
 }
 
+export interface PrivateVulnerabilityReportingSettings {
+  enabled: boolean;
+}
+
 export interface RestrictionUser {
   login?: string;
 }
@@ -476,6 +480,13 @@ export function buildDependabotSettings({
   securityUpdates?: boolean;
 } = {}): DependabotSettings {
   return { vulnerability_alerts: true, security_updates: securityUpdates };
+}
+
+// GitHub offers private vulnerability reporting on public repositories only.
+export function buildPrivateVulnerabilityReporting(
+  visibility: unknown,
+): PrivateVulnerabilityReportingSettings | undefined {
+  return visibility === "public" ? { enabled: true } : undefined;
 }
 
 export function buildMainRuleset(

@@ -40,6 +40,8 @@ branch.
   token that may open pull requests, and artifact, log and cache retention
 - Secret scanning with push protection, and Dependabot alerts; security
   updates only if you enable them
+- Private vulnerability reporting on public repositories, so `SECURITY.md` can
+  point reporters to a private advisory
 - Labels from `.github/labels.yml`, pruning undeclared ones; without the file,
   labels are left as they are
 - A `Protect main` ruleset requiring pull requests and a passing required
