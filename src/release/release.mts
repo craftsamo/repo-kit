@@ -26,6 +26,7 @@ import {
   versionOfTag,
 } from "./notes.mts";
 import type { NotesConfig, PullRequest } from "./notes.mts";
+import { bumpedVersionFile, versionFileFormat } from "./version-files.mts";
 
 // A repository without its own release notes config gets the shipped one.
 const NOTES_CONFIG = ".github/release-notes.json";
@@ -43,6 +44,12 @@ export interface Release {
   name: string;
   html_url: string;
   target_commitish: string;
+}
+
+/** What a release does besides setting the version in package.json. */
+export interface ReleaseOptions {
+  /** Files, relative to the repository root, whose top-level version is set. */
+  versionFiles: string[];
 }
 
 const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
@@ -164,20 +171,77 @@ export function unlistedCommits(log: string): string[] {
     );
 }
 
-export function parsePublishArguments(argv: string[]): { dryRun: boolean } {
-  let dryRun = false;
-  for (const value of argv) {
-    if (value === "--dry-run") dryRun = true;
-    else throw new UsageError(`Unknown argument: ${value}`);
+interface ReleaseFlags {
+  versionFiles: string[];
+}
+
+/** A path the repository holds, as written relative to its root. */
+function repositoryPath(value: string | undefined, flag: string): string {
+  const normalized = value ? path.normalize(value) : "";
+  if (
+    !normalized ||
+    path.isAbsolute(normalized) ||
+    normalized === "." ||
+    normalized === ".." ||
+    normalized.startsWith(`..${path.sep}`)
+  ) {
+    throw new UsageError(
+      `${flag} requires a path below the repository root, not "${value ?? ""}".`,
+    );
   }
-  return { dryRun };
+  return normalized;
+}
+
+/**
+ * Take the flag at the head of `values` into `flags` when it is one of the
+ * release options that publish and sync share, with its value. Returns
+ * whether it was one.
+ */
+function takeReleaseFlag(
+  flag: string | undefined,
+  values: string[],
+  flags: ReleaseFlags,
+): boolean {
+  if (flag === "--version-file") {
+    const file = repositoryPath(values.shift(), flag);
+    if (versionFileFormat(file) === undefined) {
+      throw new UsageError(
+        `${flag} takes a .json, .yml or .yaml file, not ${file}.`,
+      );
+    }
+    flags.versionFiles.push(file);
+  } else return false;
+  return true;
+}
+
+/** The release options the flags give. */
+function releaseOptions(flags: ReleaseFlags): ReleaseOptions {
+  return { versionFiles: [...new Set(flags.versionFiles)] };
+}
+
+export function parsePublishArguments(
+  argv: string[],
+): { dryRun: boolean } & ReleaseOptions {
+  const values = [...argv];
+  const flags: ReleaseFlags = { versionFiles: [] };
+  let dryRun = false;
+  while (values.length > 0) {
+    const value = values.shift();
+    if (value === "--dry-run") dryRun = true;
+    else if (!takeReleaseFlag(value, values, flags)) {
+      throw new UsageError(`Unknown argument: ${value}`);
+    }
+  }
+  return { dryRun, ...releaseOptions(flags) };
 }
 
 export function parseSyncArguments(argv: string[]): {
   version?: string;
   tag?: string;
+  versionFiles: string[];
 } {
   const values = [...argv];
+  const flags: ReleaseFlags = { versionFiles: [] };
   let version: string | undefined;
   let tag: string | undefined;
   while (values.length > 0) {
@@ -190,7 +254,9 @@ export function parseSyncArguments(argv: string[]): {
     } else if (value === "--tag") {
       tag = values.shift();
       if (!tag) throw new UsageError("--tag requires a release tag.");
-    } else throw new UsageError(`Unknown argument: ${value}`);
+    } else if (!takeReleaseFlag(value, values, flags)) {
+      throw new UsageError(`Unknown argument: ${value}`);
+    }
   }
   if (version !== undefined && tag !== undefined) {
     throw new UsageError("Use either --version or --tag, not both.");
@@ -198,6 +264,7 @@ export function parseSyncArguments(argv: string[]): {
   return {
     ...(version === undefined ? {} : { version }),
     ...(tag === undefined ? {} : { tag }),
+    versionFiles: releaseOptions(flags).versionFiles,
   };
 }
 
@@ -226,19 +293,14 @@ function readNotesConfig(): NotesConfig {
 }
 
 /**
- * Set the root package version in the given checkout of main to `version`
- * and push the commit to main. Returns false when main already carries it.
+ * Commit the staged changes of the checkout with hooks off. The checkout may
+ * have no node_modules, so the commit-msg hook's commitlint cannot run there;
+ * the messages follow the convention it checks.
  */
-function bumpAndPush(workTree: string, version: string): boolean {
-  const file = path.join(workTree, "package.json");
-  const manifest = readFileSync(file, "utf8");
-  if (currentVersion(manifest) === version) return false;
-  writeFileSync(file, bumpedManifest(manifest, version));
-  git(["add", "package.json"], workTree);
-  // The checkout may have no node_modules, so the commit-msg hook's
-  // commitlint cannot run there; bumpMessage follows the convention it
-  // checks.
-  const [subject, body] = bumpMessage(version, readNotesConfig().tagPrefix);
+function commitStaged(
+  workTree: string,
+  [subject, body]: [string, string],
+): void {
   git(
     [
       "-c",
@@ -252,8 +314,60 @@ function bumpAndPush(workTree: string, version: string): boolean {
     ],
     workTree,
   );
-  git(["push", "origin", "HEAD:refs/heads/main"], workTree);
+}
+
+/**
+ * Set the version in package.json and the given version files of the checkout
+ * of main to `version` in one commit. Every file is read and rewritten in
+ * memory first, so one that is missing or has no top-level version fails
+ * before any file is written. Returns false when every file already carries
+ * the version.
+ */
+function commitVersion(
+  workTree: string,
+  version: string,
+  versionFiles: string[],
+): boolean {
+  const updates = new Map<string, string>();
+  const manifest = readFileSync(path.join(workTree, "package.json"), "utf8");
+  if (currentVersion(manifest) !== version) {
+    updates.set("package.json", bumpedManifest(manifest, version));
+  }
+  for (const file of versionFiles) {
+    const location = path.join(workTree, file);
+    if (!existsSync(location)) {
+      throw new Error(`The version file ${file} does not exist.`);
+    }
+    const source = readFileSync(location, "utf8");
+    const bumped = bumpedVersionFile(file, source, version);
+    if (bumped !== source) updates.set(file, bumped);
+  }
+  if (updates.size === 0) return false;
+  for (const [file, content] of updates) {
+    writeFileSync(path.join(workTree, file), content);
+  }
+  git(["add", "--", ...updates.keys()], workTree);
+  commitStaged(workTree, bumpMessage(version, readNotesConfig().tagPrefix));
   return true;
+}
+
+/** Push `commit` of the checkout to main. */
+function pushMain(workTree: string, commit: string): void {
+  git(["push", "origin", `${commit}:refs/heads/main`], workTree);
+}
+
+/**
+ * Set the version in the given checkout of main to `version` and push the
+ * commit to main. Returns false when main already carries it.
+ */
+function bumpAndPush(
+  workTree: string,
+  version: string,
+  versionFiles: string[],
+): boolean {
+  const committed = commitVersion(workTree, version, versionFiles);
+  if (committed) pushMain(workTree, "HEAD");
+  return committed;
 }
 
 /**
@@ -261,14 +375,15 @@ function bumpAndPush(workTree: string, version: string): boolean {
  * the checked-out branch is left alone. Returns whether a commit was pushed
  * and the commit main then ends at.
  */
-function bumpMain(
+export function bumpMain(
   base: string,
   version: string,
+  { versionFiles }: ReleaseOptions,
 ): { pushed: boolean; head: string } {
   const workTree = mkdtempSync(path.join(tmpdir(), "release-"));
   try {
     git(["worktree", "add", "--detach", workTree, base]);
-    const pushed = bumpAndPush(workTree, version);
+    const pushed = bumpAndPush(workTree, version, versionFiles);
     return { pushed, head: git(["rev-parse", "HEAD"], workTree) };
   } finally {
     try {
@@ -295,7 +410,8 @@ function readDraft(repository: string): { version: string; draft: Release } {
  * main to commit in; a version lower than main's is left alone, so a release
  * published for an older line does not move main back. Without them, the
  * draft is read from GitHub and the commit is made in a temporary worktree,
- * so the checked-out branch is left alone.
+ * so the checked-out branch is left alone. The files given with
+ * --version-file get the version in the same commit.
  */
 export function sync(argv: string[]): void {
   const args = parseSyncArguments(argv);
@@ -309,7 +425,7 @@ export function sync(argv: string[]): void {
       console.log(`main is at ${current}, past ${given}; left as it is.`);
       return;
     }
-    const pushed = bumpAndPush(repositoryRoot(), given);
+    const pushed = bumpAndPush(repositoryRoot(), given, args.versionFiles);
     console.log(
       pushed
         ? `Set the version to ${given} on main.`
@@ -321,7 +437,9 @@ export function sync(argv: string[]): void {
   const { version, draft } = readDraft(getRepositoryName());
   console.log(`Draft release: ${draft.name} (${draft.tag_name})`);
   git(["fetch", "origin", "main"]);
-  const { pushed } = bumpMain(git(["rev-parse", "origin/main"]), version);
+  const { pushed } = bumpMain(git(["rev-parse", "origin/main"]), version, {
+    versionFiles: args.versionFiles,
+  });
   console.log(
     pushed
       ? `Set the version to ${version} on main. Publish with repo-kit release publish.`
@@ -346,7 +464,7 @@ function targetCommit(target: string): string {
  * --dry-run checks and prints what it would do, without doing it.
  */
 export function publish(argv: string[]): void {
-  const { dryRun } = parsePublishArguments(argv);
+  const { dryRun, ...options } = parsePublishArguments(argv);
   const repository = process.env.GITHUB_REPOSITORY ?? getRepositoryName();
   const { version, draft } = readDraft(repository);
   console.log(`Draft release: ${draft.name} (${draft.tag_name})`);
@@ -384,9 +502,14 @@ export function publish(argv: string[]): void {
     console.log(
       `Would set the version on main (${base.slice(0, 7)}) to ${version} and publish ${draft.tag_name} on it.`,
     );
+    if (options.versionFiles.length > 0) {
+      console.log(
+        `Would set the version in ${options.versionFiles.join(", ")} too.`,
+      );
+    }
     return;
   }
-  const { pushed, head } = bumpMain(base, version);
+  const { pushed, head } = bumpMain(base, version, options);
   console.log(
     pushed
       ? `Set the version to ${version} on main (${head.slice(0, 7)}).`

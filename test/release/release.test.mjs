@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import { describe, it } from "node:test";
 
 import {
@@ -137,12 +138,14 @@ describe("parseDraftArguments", () => {
 
 describe("parseSyncArguments", () => {
   it("takes a version or nothing", () => {
-    assert.deepEqual(parseSyncArguments([]), {});
+    assert.deepEqual(parseSyncArguments([]), { versionFiles: [] });
     assert.deepEqual(parseSyncArguments(["--version", "0.11.0"]), {
       version: "0.11.0",
+      versionFiles: [],
     });
     assert.deepEqual(parseSyncArguments(["--version", "1.0.0-rc.1"]), {
       version: "1.0.0-rc.1",
+      versionFiles: [],
     });
   });
 
@@ -158,6 +161,7 @@ describe("parseSyncArguments", () => {
   it("takes the tag of a published release instead of a version", () => {
     assert.deepEqual(parseSyncArguments(["--tag", "v0.11.0"]), {
       tag: "v0.11.0",
+      versionFiles: [],
     });
     assert.throws(() => parseSyncArguments(["--tag"]), /--tag requires/);
     assert.throws(
@@ -165,13 +169,67 @@ describe("parseSyncArguments", () => {
       /either --version or --tag/,
     );
   });
+
+  it("takes version files, each once", () => {
+    assert.deepEqual(
+      parseSyncArguments([
+        "--tag",
+        "v1.0.0",
+        "--version-file",
+        "chart/Chart.yaml",
+        "--version-file",
+        "app/package.json",
+        "--version-file",
+        "chart/Chart.yaml",
+      ]),
+      {
+        tag: "v1.0.0",
+        versionFiles: [path.normalize("chart/Chart.yaml"), "app/package.json"],
+      },
+    );
+  });
 });
 
 describe("parsePublishArguments", () => {
-  it("takes a dry run and nothing else", () => {
-    assert.deepEqual(parsePublishArguments([]), { dryRun: false });
-    assert.deepEqual(parsePublishArguments(["--dry-run"]), { dryRun: true });
+  it("takes a dry run and nothing else by default", () => {
+    assert.deepEqual(parsePublishArguments([]), {
+      dryRun: false,
+      versionFiles: [],
+    });
+    assert.deepEqual(parsePublishArguments(["--dry-run"]), {
+      dryRun: true,
+      versionFiles: [],
+    });
     assert.throws(() => parsePublishArguments(["--force"]), /Unknown argument/);
+  });
+
+  it("takes version files", () => {
+    assert.deepEqual(
+      parsePublishArguments([
+        "--version-file",
+        "app/package.json",
+        "--version-file",
+        "chart/Chart.yml",
+        "--dry-run",
+      ]),
+      {
+        dryRun: true,
+        versionFiles: ["app/package.json", "chart/Chart.yml"],
+      },
+    );
+  });
+
+  it("rejects a missing value, a path outside or a file of another format", () => {
+    const rejected = (argv, pattern) => {
+      assert.throws(() => parsePublishArguments(argv), pattern);
+      assert.throws(() => parsePublishArguments(argv), UsageError);
+    };
+    rejected(["--version-file"], /--version-file requires a path/);
+    rejected(["--version-file", "/tmp/a.json"], /below the repository root/);
+    rejected(["--version-file", "../package.json"], /below the repository/);
+    rejected(["--version-file", "."], /below the repository root/);
+    rejected(["--version-file", "a/.."], /below the repository root/);
+    rejected(["--version-file", "VERSION"], /takes a \.json, \.yml or \.yaml/);
   });
 });
 

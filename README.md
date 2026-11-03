@@ -169,6 +169,16 @@ Changes collect in one draft release until you publish it.
   `main`, to the draft's, the given one or the one a release tag names, and
   never moves it back.
 
+Both also take an option that is off by default:
+
+- `--version-file <path>` (repeatable) sets the top-level `version` of a
+  `.json`, `.yml` or `.yaml` file in the same commit as `package.json`. The
+  value is replaced in place, so the rest of the file keeps its formatting; a
+  `version` key inside another object, or an indented `version:`, is left
+  alone, and a YAML file changes in its first document only. A file that is
+  missing or has no top-level version fails the release before anything is
+  pushed.
+
 The notes come from `.github/release-notes.json`. Without one, every pull
 request goes under one section as a patch, tags are `v<version>`, and a
 `skip-changelog` label leaves a pull request out. With one, each category
