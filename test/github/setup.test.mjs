@@ -24,6 +24,7 @@ import { CommandError } from "../../src/github/gh.mts";
 import {
   applyActionsSettings,
   applyCacheRetention,
+  getCacheRetentionState,
   run,
 } from "../../src/github/setup.mts";
 
@@ -240,6 +241,55 @@ jobs:
     assert.deepEqual(buildCacheRetentionSettings(), {
       max_cache_retention_days: 3,
     });
+  });
+
+  it("reads the cache retention", () => {
+    const calls = [];
+    const result = getCacheRetentionState("owner/repo", (method, endpoint) => {
+      calls.push([method, endpoint]);
+      return { max_cache_retention_days: 7 };
+    });
+    assert.deepEqual(result, {
+      state: { max_cache_retention_days: 7 },
+    });
+    assert.deepEqual(calls, [
+      ["GET", "/repos/owner/repo/actions/cache/retention-limit"],
+    ]);
+  });
+
+  it("skips the cache retention when the account needs a payment method", () => {
+    const result = getCacheRetentionState("owner/repo", () => {
+      throw httpError(402, "Payment Required");
+    });
+    assert.match(result.unavailable, /payment method/);
+    assert.equal("state" in result, false);
+  });
+
+  it("skips the cache retention it cannot read", () => {
+    const result = getCacheRetentionState("owner/repo", () => {
+      throw httpError(404, "Not Found");
+    });
+    assert.match(result.unavailable, /cannot be read for this repository/);
+    assert.equal("state" in result, false);
+  });
+
+  it("stops on other cache retention read errors", () => {
+    assert.throws(
+      () =>
+        getCacheRetentionState("owner/repo", () => {
+          throw httpError(500, "Server Error");
+        }),
+      /Server Error/,
+    );
+  });
+
+  it("keeps the cache retention when the account needs a payment method", (t) => {
+    const warn = t.mock.method(console, "warn", () => {});
+    applyCacheRetention("owner/repo", buildCacheRetentionSettings(), () => {
+      throw httpError(402, "Payment Required");
+    });
+    assert.match(warn.mock.calls[0].arguments[0], /payment method/);
+    assert.doesNotMatch(warn.mock.calls[0].arguments[0], /may cap it/);
   });
 
   it("keeps the cache retention an organization caps lower", (t) => {

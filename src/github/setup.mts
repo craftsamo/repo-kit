@@ -385,22 +385,46 @@ function applyRetention(repository: string, settings: RetentionSettings): void {
   );
 }
 
-function getCacheRetentionState(
+const CACHE_RETENTION_BILLING_WARNING_READ =
+  "Actions cache retention cannot be read: GitHub requires a payment method on the repository owner's account for this setting (HTTP 402); skipped.";
+
+const cacheRetentionBillingWarningWrite = (days: number): string =>
+  `Actions cache retention could not be set to ${days} days: GitHub requires a payment method on the repository owner's account for this setting (HTTP 402). Kept the current value.`;
+
+/** The Actions cache retention as read, or the warning that explains why it was skipped. */
+export type CacheRetentionRead =
+  { state: CacheRetentionState } | { unavailable: string };
+
+// GitHub answers 402 when the repository owner's account has no payment
+// method, which setup cannot fix; skip the setting instead of stopping.
+export function getCacheRetentionState(
   repository: string,
-): CacheRetentionState | undefined {
+  request: ApiRequest = api,
+): CacheRetentionRead {
   try {
-    return api<CacheRetentionState>(
-      "GET",
-      `/repos/${repository}/actions/cache/retention-limit`,
-    );
+    return {
+      state:
+        request<CacheRetentionState>(
+          "GET",
+          `/repos/${repository}/actions/cache/retention-limit`,
+        ) ?? {},
+    };
   } catch (error) {
-    if (isHttpStatus(error, 403, 404)) return undefined;
+    if (isHttpStatus(error, 402)) {
+      return { unavailable: CACHE_RETENTION_BILLING_WARNING_READ };
+    }
+    if (isHttpStatus(error, 403, 404)) {
+      return {
+        unavailable:
+          "Actions cache retention cannot be read for this repository; skipped.",
+      };
+    }
     throw error;
   }
 }
 
 // An organization or enterprise may cap cache retention below setup's
-// value; GitHub reports the cap only by rejecting the request, so keep the
+// value, or GitHub may require a payment method on the account (402); keep the
 // current value instead of stopping setup.
 export function applyCacheRetention(
   repository: string,
@@ -414,6 +438,12 @@ export function applyCacheRetention(
       settings,
     );
   } catch (error) {
+    if (isHttpStatus(error, 402)) {
+      console.warn(
+        cacheRetentionBillingWarningWrite(settings.max_cache_retention_days),
+      );
+      return;
+    }
     if (!isHttpStatus(error, 400, 403, 422)) throw error;
     console.warn(
       `Actions cache retention could not be set to ${settings.max_cache_retention_days} days; an organization or enterprise policy may cap it. Kept the current value.`,
@@ -727,9 +757,9 @@ export async function setupRepository(args: SetupArguments): Promise<void> {
     const retentionSettings =
       retentionState &&
       buildRetentionSettings(retentionState.maximum_allowed_days);
-    const cacheRetentionState = getCacheRetentionState(repository);
+    const cacheRetention = getCacheRetentionState(repository);
     const cacheRetentionSettings =
-      cacheRetentionState && buildCacheRetentionSettings();
+      "state" in cacheRetention ? buildCacheRetentionSettings() : undefined;
     const securityState = (state.security_and_analysis ??
       {}) as SecurityAndAnalysisState;
     const securitySettings = buildSecurityAndAnalysis();
@@ -769,15 +799,13 @@ export async function setupRepository(args: SetupArguments): Promise<void> {
         "\nArtifact and log retention cannot be read for this repository; skipped.",
       );
     }
-    if (cacheRetentionSettings) {
+    if ("state" in cacheRetention) {
       printDiff(
         "Actions cache retention",
-        diffObject(cacheRetentionState, cacheRetentionSettings),
+        diffObject(cacheRetention.state, buildCacheRetentionSettings()),
       );
     } else {
-      console.warn(
-        "\nActions cache retention cannot be read for this repository; skipped.",
-      );
+      console.warn(`\n${cacheRetention.unavailable}`);
     }
     printDiff("Secret scanning", diffObject(securityState, securitySettings));
     printDiff("Dependabot", diffObject(dependabotState, dependabotSettings));
