@@ -79,3 +79,81 @@ describe("reusable workflows", () => {
     });
   }
 });
+
+// The lines of the file indented deeper than the line that opens `block`.
+const blockLines = (source, block) => {
+  const lines = source.split("\n");
+  const start = lines.findIndex((line) => line.trimEnd() === block);
+  assert.ok(start >= 0, `no ${block.trim()}`);
+  const indent = lines[start].search(/\S/);
+  const inside = [];
+  for (const line of lines.slice(start + 1)) {
+    if (line.trim() && line.search(/\S/) <= indent) break;
+    inside.push(line);
+  }
+  return inside.join("\n");
+};
+
+describe("release-publish.yml inputs and outputs", () => {
+  const source = reusable.find(
+    ({ file }) => file === "release-publish.yml",
+  ).source;
+  const body = code(source);
+
+  it("takes the version files, the build and its artifacts as optional strings", () => {
+    const inputs = blockLines(body, "    inputs:");
+    for (const name of ["version-files", "build-command", "artifacts"]) {
+      const input = blockLines(inputs, `      ${name}:`);
+      assert.match(input, /type: string/, name);
+      assert.match(input, /default: ""/, name);
+    }
+    const pnpm = blockLines(inputs, "      setup-pnpm:");
+    assert.match(pnpm, /type: boolean/);
+    assert.match(pnpm, /default: false/);
+    const nodeVersionFile = blockLines(inputs, "      node-version-file:");
+    assert.match(nodeVersionFile, /type: string/);
+    assert.match(nodeVersionFile, /default: ""/);
+  });
+
+  it("hands the published tag to the caller", () => {
+    const tag = blockLines(blockLines(body, "    outputs:"), "      tag:");
+    assert.match(tag, /value: \$\{\{ jobs\.publish\.outputs\.tag \}\}/);
+    const job = blockLines(body, "  publish:");
+    assert.match(
+      blockLines(job, "    outputs:"),
+      /tag: \$\{\{ steps\.release\.outputs\.tag \}\}/,
+    );
+    assert.match(job, /- name: Run the release step\n\s+id: release\n/);
+  });
+
+  it("passes the inputs to the command line through the environment", () => {
+    const step = blockLines(body, "      - name: Run the release step");
+    const script = blockLines(step, "        run: |");
+    assert.doesNotMatch(script, /\$\{\{/);
+    for (const [name, input] of [
+      ["VERSION_FILES", "version-files"],
+      ["BUILD_COMMAND", "build-command"],
+      ["ARTIFACTS", "artifacts"],
+    ]) {
+      assert.match(
+        step,
+        new RegExp(`${name}: \\$\\{\\{ inputs\\.${input} \\}\\}`),
+      );
+    }
+    for (const flag of ["--version-file", "--build-command", "--artifact"]) {
+      assert.ok(script.includes(flag), flag);
+    }
+  });
+
+  it("builds only for a release published from the Actions tab", () => {
+    const script = blockLines(
+      blockLines(body, "      - name: Run the release step"),
+      "        run: |",
+    );
+    const [sync, publish] = script.split("\n          else\n");
+    assert.match(sync, /release sync --tag/);
+    assert.doesNotMatch(sync, /--build-command|--artifact/);
+    assert.match(publish, /release publish/);
+    assert.match(publish, /--build-command/);
+  });
+});

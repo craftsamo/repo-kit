@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import { describe, it } from "node:test";
 
 import {
@@ -10,6 +11,8 @@ import {
   parseDraftArguments,
   parsePublishArguments,
   parseSyncArguments,
+  releaseMessage,
+  tagPushedMessage,
   unlistedCommits,
 } from "../../src/release/release.mts";
 import { UsageError } from "../../src/errors.mts";
@@ -115,6 +118,35 @@ describe("bumpMessage", () => {
   });
 });
 
+describe("releaseMessage", () => {
+  it("keeps to the commit convention, even for a long prerelease", () => {
+    for (const version of ["0.11.0", "10.20.30-beta.12"]) {
+      const [subject, body] = releaseMessage(version, "v");
+      assert.equal(subject, `chore(release): build ${version}`);
+      const header = /^chore\(release\): (.+)$/.exec(subject);
+      assert.ok(header[1].length <= 50, `subject too long: ${header[1]}`);
+      assert.doesNotMatch(header[1], /^[A-Z]|\.$/);
+      assert.match(body, new RegExp(`v${version.replaceAll(".", "\\.")}`));
+      for (const line of body.split("\n")) {
+        assert.ok(line.length <= 72, `body line too long: ${line}`);
+      }
+    }
+  });
+});
+
+describe("tagPushedMessage", () => {
+  it("checks the release before deleting the tag, and only for a draft", () => {
+    const message = tagPushedMessage("owner/name", "v1.1.0");
+    const check = message.indexOf(
+      "gh release view v1.1.0 --repo owner/name --json isDraft",
+    );
+    const remove = message.indexOf("git push origin :refs/tags/v1.1.0");
+    assert.ok(check >= 0 && remove > check, message);
+    assert.match(message, /Only if it is still a draft/);
+    assert.match(message, /If it is published, leave the tag/);
+  });
+});
+
 describe("parseDraftArguments", () => {
   it("takes a target commit and a dry run", () => {
     assert.deepEqual(parseDraftArguments([]), { dryRun: false });
@@ -137,12 +169,14 @@ describe("parseDraftArguments", () => {
 
 describe("parseSyncArguments", () => {
   it("takes a version or nothing", () => {
-    assert.deepEqual(parseSyncArguments([]), {});
+    assert.deepEqual(parseSyncArguments([]), { versionFiles: [] });
     assert.deepEqual(parseSyncArguments(["--version", "0.11.0"]), {
       version: "0.11.0",
+      versionFiles: [],
     });
     assert.deepEqual(parseSyncArguments(["--version", "1.0.0-rc.1"]), {
       version: "1.0.0-rc.1",
+      versionFiles: [],
     });
   });
 
@@ -158,6 +192,7 @@ describe("parseSyncArguments", () => {
   it("takes the tag of a published release instead of a version", () => {
     assert.deepEqual(parseSyncArguments(["--tag", "v0.11.0"]), {
       tag: "v0.11.0",
+      versionFiles: [],
     });
     assert.throws(() => parseSyncArguments(["--tag"]), /--tag requires/);
     assert.throws(
@@ -165,13 +200,139 @@ describe("parseSyncArguments", () => {
       /either --version or --tag/,
     );
   });
+
+  it("takes version files, each once", () => {
+    assert.deepEqual(
+      parseSyncArguments([
+        "--tag",
+        "v1.0.0",
+        "--version-file",
+        "chart/Chart.yaml",
+        "--version-file",
+        "app/package.json",
+        "--version-file",
+        "chart/Chart.yaml",
+      ]),
+      {
+        tag: "v1.0.0",
+        versionFiles: [path.normalize("chart/Chart.yaml"), "app/package.json"],
+      },
+    );
+  });
+
+  it("refuses to build, since it cannot move an existing tag", () => {
+    for (const flags of [
+      ["--build-command", "pnpm build", "--artifact", "dist"],
+      ["--build-command", "pnpm build"],
+      ["--artifact", "dist"],
+    ]) {
+      assert.throws(() => parseSyncArguments(flags), /does not build/);
+      assert.throws(() => parseSyncArguments(flags), UsageError);
+    }
+  });
 });
 
 describe("parsePublishArguments", () => {
-  it("takes a dry run and nothing else", () => {
-    assert.deepEqual(parsePublishArguments([]), { dryRun: false });
-    assert.deepEqual(parsePublishArguments(["--dry-run"]), { dryRun: true });
+  it("takes a dry run and nothing else by default", () => {
+    assert.deepEqual(parsePublishArguments([]), {
+      dryRun: false,
+      versionFiles: [],
+    });
+    assert.deepEqual(parsePublishArguments(["--dry-run"]), {
+      dryRun: true,
+      versionFiles: [],
+    });
     assert.throws(() => parsePublishArguments(["--force"]), /Unknown argument/);
+  });
+
+  it("takes version files, a build command and its artifacts", () => {
+    assert.deepEqual(
+      parsePublishArguments([
+        "--version-file",
+        "app/package.json",
+        "--version-file",
+        "chart/Chart.yml",
+        "--build-command",
+        "pnpm install && pnpm build",
+        "--artifact",
+        "dist",
+        "--artifact",
+        "bin/app.js",
+        "--dry-run",
+      ]),
+      {
+        dryRun: true,
+        versionFiles: ["app/package.json", "chart/Chart.yml"],
+        build: {
+          command: "pnpm install && pnpm build",
+          artifacts: ["dist", "bin/app.js"],
+        },
+      },
+    );
+  });
+
+  it("takes a build command and its artifacts together or not at all", () => {
+    assert.throws(
+      () => parsePublishArguments(["--build-command", "pnpm build"]),
+      /--build-command requires --artifact/,
+    );
+    assert.throws(
+      () => parsePublishArguments(["--artifact", "dist"]),
+      /--artifact requires --build-command/,
+    );
+    assert.throws(
+      () => parsePublishArguments(["--artifact", "dist"]),
+      UsageError,
+    );
+  });
+
+  it("rejects a missing value, a second build command or a path outside", () => {
+    const rejected = (argv, pattern) => {
+      assert.throws(() => parsePublishArguments(argv), pattern);
+      assert.throws(() => parsePublishArguments(argv), UsageError);
+    };
+    rejected(["--version-file"], /--version-file requires a path/);
+    rejected(["--artifact"], /--artifact requires a path/);
+    rejected(["--build-command"], /--build-command requires a command/);
+    rejected(["--build-command", "  "], /--build-command requires a command/);
+    rejected(
+      ["--build-command", "a", "--build-command", "b", "--artifact", "dist"],
+      /once/,
+    );
+    rejected(["--artifact", "/tmp/dist"], /below the repository root/);
+    rejected(["--artifact", "../dist"], /below the repository root/);
+    rejected(["--artifact", "."], /below the repository root/);
+    rejected(["--artifact", "dist/.."], /below the repository root/);
+    rejected(["--version-file", "../package.json"], /below the repository/);
+    rejected(["--version-file", "VERSION"], /takes a \.json, \.yml or \.yaml/);
+  });
+
+  it("rejects the .git directory and what is inside it", () => {
+    const rejected = (argv) => {
+      assert.throws(() => parsePublishArguments(argv), /\.git holds/);
+      assert.throws(() => parsePublishArguments(argv), UsageError);
+    };
+    rejected(["--artifact", ".git"]);
+    rejected(["--artifact", ".git/"]);
+    rejected(["--artifact", ".git/hooks"]);
+    rejected(["--artifact", "./.git/config"]);
+    rejected(["--artifact", "dist/../.git/hooks"]);
+    rejected(["--version-file", ".git/info/version.json"]);
+    assert.deepEqual(
+      parsePublishArguments([
+        "--build-command",
+        "true",
+        "--artifact",
+        ".github/dist",
+        "--artifact",
+        "dist/.git-keep",
+      ]).build.artifacts,
+      [path.normalize(".github/dist"), path.normalize("dist/.git-keep")],
+    );
+    assert.throws(
+      () => parseSyncArguments(["--version-file", ".git/x.json"]),
+      /\.git holds/,
+    );
   });
 });
 

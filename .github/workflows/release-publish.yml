@@ -3,22 +3,81 @@ name: Publish release
 # Publishes the caller's draft release with `repo-kit release publish`, or
 # follows a release published on the Releases page with `release sync`. The
 # version bump is pushed to main with the release deploy key, which
-# `repo-kit setup github` creates and lets bypass the protection of main:
+# `repo-kit setup github` creates and lets bypass the protection of main.
+#
+# `version-files` lists more files, one per line or comma-separated, whose
+# top-level version is set in the same commit. `build-command` and `artifacts`
+# (given together) run a build in a fresh checkout of main after that commit
+# and tag the release on a commit above it that adds the artifacts, which main
+# ignores; the build starts without installed dependencies, so the command
+# installs them. Only a release published from the Actions tab is built: one
+# published on the Releases page already has its tag, so there `release sync`
+# sets the version files and the build is skipped with a warning. The
+# `tag` output names the release published from the Actions tab:
 #
 #   on:
 #     workflow_dispatch:
 #     release:
 #       types: [published]
 #   jobs:
-#     publish:
+#     release:
 #       permissions:
 #         contents: write
 #       uses: craftsamo/repo-kit/.github/workflows/release-publish.yml@v1
+#       with:
+#         version-files: |
+#           packages/app/package.json
+#           chart/Chart.yaml
+#         build-command: pnpm install --frozen-lockfile && pnpm run build
+#         artifacts: dist
+#         setup-pnpm: true
+#         node-version-file: .node-version
 #       secrets:
 #         RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
+#     npm:
+#       needs: release
+#       if: github.event_name == 'workflow_dispatch'
+#       runs-on: ubuntu-latest
+#       permissions:
+#         contents: read
+#         id-token: write
+#       steps:
+#         - uses: actions/checkout@v7
+#           with:
+#             ref: refs/tags/${{ needs.release.outputs.tag }}
+#         - uses: actions/setup-node@v7
+#           with:
+#             node-version-file: .node-version
+#             registry-url: https://registry.npmjs.org
+#         - run: npm publish
 
 on:
   workflow_call:
+    inputs:
+      version-files:
+        description: Files, one per line or comma-separated, whose top-level version is set with package.json (.json, .yml and .yaml)
+        type: string
+        default: ""
+      build-command:
+        description: Shell command that builds the artifacts, run in a checkout of main without installed dependencies; needs artifacts
+        type: string
+        default: ""
+      artifacts:
+        description: Files and directories, one per line or comma-separated, the build produces and the release tag carries; needs build-command
+        type: string
+        default: ""
+      setup-pnpm:
+        description: Run corepack enable, so the build command can use the pnpm the repository pins
+        type: boolean
+        default: false
+      node-version-file:
+        description: File in the repository naming the Node.js version the build command uses; Node.js 24.x if empty
+        type: string
+        default: ""
+    outputs:
+      tag:
+        description: Tag of the release published from the Actions tab
+        value: ${{ jobs.publish.outputs.tag }}
     secrets:
       RELEASE_DEPLOY_KEY:
         description: Private half of the deploy key that may push to main
@@ -40,6 +99,8 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
     env:
       # A secret cannot appear in a step's if, so whether it is set is read
       # here once.
@@ -78,14 +139,50 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      # repo-kit runs on the Node.js above; the build command, and the commands
+      # it starts, run on the repository's.
+      - name: Remember the Node.js that runs repo-kit
+        if: inputs.node-version-file != ''
+        run: echo "REPO_KIT_NODE=$(command -v node)" >> "$GITHUB_ENV"
+      - name: Use the repository's Node.js version
+        if: inputs.node-version-file != ''
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: repository/${{ inputs.node-version-file }}
+          package-manager-cache: false
+      - name: Enable corepack
+        if: inputs.setup-pnpm
+        run: corepack enable
       - name: Run the release step
+        id: release
         env:
           TAG: ${{ github.event.release.tag_name }}
+          VERSION_FILES: ${{ inputs.version-files }}
+          BUILD_COMMAND: ${{ inputs.build-command }}
+          ARTIFACTS: ${{ inputs.artifacts }}
         run: |
+          # The items of a newline- or comma-separated list, trimmed.
+          items() {
+            local item
+            while IFS= read -r item; do
+              item="${item#"${item%%[![:space:]]*}"}"
+              item="${item%"${item##*[![:space:]]}"}"
+              if [[ -n "$item" ]]; then printf '%s\n' "$item"; fi
+            done <<<"${1//,/$'\n'}"
+          }
+          flags=()
+          mapfile -t files < <(items "$VERSION_FILES")
+          for file in "${files[@]}"; do flags+=(--version-file "$file"); done
           if [[ -n "$TAG" ]]; then
-            node "$GITHUB_WORKSPACE/repo-kit/src/cli.mts" release sync --tag "$TAG"
+            if [[ -n "$BUILD_COMMAND" ]]; then
+              echo "::warning::$TAG was published on the Releases page, which already tagged it, so the build is skipped. Publish from the Actions tab to build."
+            fi
+            "${REPO_KIT_NODE:-node}" "$GITHUB_WORKSPACE/repo-kit/src/cli.mts" release sync --tag "$TAG" "${flags[@]}"
           else
-            node "$GITHUB_WORKSPACE/repo-kit/src/cli.mts" release publish
+            if [[ -n "$BUILD_COMMAND" ]]; then flags+=(--build-command "$BUILD_COMMAND"); fi
+            mapfile -t artifacts < <(items "$ARTIFACTS")
+            for artifact in "${artifacts[@]}"; do flags+=(--artifact "$artifact"); done
+            "${REPO_KIT_NODE:-node}" "$GITHUB_WORKSPACE/repo-kit/src/cli.mts" release publish "${flags[@]}"
           fi
 
   # A release published on the Releases page tags the commit the draft

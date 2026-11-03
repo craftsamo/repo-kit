@@ -1,4 +1,6 @@
+import { execFileSync } from "node:child_process";
 import {
+  appendFileSync,
   existsSync,
   mkdtempSync,
   readFileSync,
@@ -26,6 +28,7 @@ import {
   versionOfTag,
 } from "./notes.mts";
 import type { NotesConfig, PullRequest } from "./notes.mts";
+import { bumpedVersionFile, versionFileFormat } from "./version-files.mts";
 
 // A repository without its own release notes config gets the shipped one.
 const NOTES_CONFIG = ".github/release-notes.json";
@@ -45,8 +48,23 @@ export interface Release {
   target_commitish: string;
 }
 
+/** A command that builds the files a release ships, and where they end up. */
+export interface BuildStep {
+  command: string;
+  artifacts: string[];
+}
+
+/** What a release does besides setting the version in package.json. */
+export interface ReleaseOptions {
+  /** Files, relative to the repository root, whose top-level version is set. */
+  versionFiles: string[];
+  /** Run after the version commit; its artifacts go into the release commit. */
+  build?: BuildStep;
+}
+
 const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const BUMP_SUBJECT_PREFIX = "chore(release): set the version to ";
+const RELEASE_SUBJECT_PREFIX = "chore(release): build ";
 
 /**
  * The version a draft release resolves to: its tag without the tag prefix.
@@ -113,6 +131,23 @@ export function bumpMessage(
   ];
 }
 
+/**
+ * The subject and body of the release commit, which adds the build output to
+ * the version commit. Made with hooks off like the version commit, so the
+ * tests hold it to the commitlint rules too.
+ */
+export function releaseMessage(
+  version: string,
+  tagPrefix: string,
+): [string, string] {
+  return [
+    `${RELEASE_SUBJECT_PREFIX}${version}`,
+    `The release ${tagPrefix}${version} tags this commit, which adds the\n` +
+      "build output the release ships to its parent on main.\n" +
+      "Main does not track that output.",
+  ];
+}
+
 export function currentVersion(manifest: string): string {
   return (JSON.parse(manifest) as { version?: string }).version ?? "";
 }
@@ -164,20 +199,115 @@ export function unlistedCommits(log: string): string[] {
     );
 }
 
-export function parsePublishArguments(argv: string[]): { dryRun: boolean } {
-  let dryRun = false;
-  for (const value of argv) {
-    if (value === "--dry-run") dryRun = true;
-    else throw new UsageError(`Unknown argument: ${value}`);
+interface ReleaseFlags {
+  versionFiles: string[];
+  buildCommand?: string;
+  artifacts: string[];
+}
+
+/** A path the repository holds, as written relative to its root. */
+function repositoryPath(value: string | undefined, flag: string): string {
+  const normalized = value ? path.normalize(value) : "";
+  if (
+    !normalized ||
+    path.isAbsolute(normalized) ||
+    normalized === "." ||
+    normalized === ".." ||
+    normalized.startsWith(`..${path.sep}`)
+  ) {
+    throw new UsageError(
+      `${flag} requires a path below the repository root, not "${value ?? ""}".`,
+    );
   }
-  return { dryRun };
+  const [first] = normalized.split(path.sep);
+  if (first?.toLowerCase() === ".git") {
+    throw new UsageError(
+      `${flag} cannot take "${value}": .git holds the repository itself, not its files.`,
+    );
+  }
+  return normalized;
+}
+
+/**
+ * Take the flag at the head of `values` into `flags` when it is one of the
+ * release options that publish and sync share, with its value. Returns
+ * whether it was one.
+ */
+function takeReleaseFlag(
+  flag: string | undefined,
+  values: string[],
+  flags: ReleaseFlags,
+): boolean {
+  if (flag === "--version-file") {
+    const file = repositoryPath(values.shift(), flag);
+    if (versionFileFormat(file) === undefined) {
+      throw new UsageError(
+        `${flag} takes a .json, .yml or .yaml file, not ${file}.`,
+      );
+    }
+    flags.versionFiles.push(file);
+  } else if (flag === "--artifact") {
+    flags.artifacts.push(repositoryPath(values.shift(), flag));
+  } else if (flag === "--build-command") {
+    const command = values.shift();
+    if (!command?.trim()) {
+      throw new UsageError("--build-command requires a command.");
+    }
+    if (flags.buildCommand !== undefined) {
+      throw new UsageError("Use --build-command once.");
+    }
+    flags.buildCommand = command;
+  } else return false;
+  return true;
+}
+
+/** The release options the flags give; a build needs its artifacts, and they need a build. */
+function releaseOptions(flags: ReleaseFlags): ReleaseOptions {
+  const { buildCommand } = flags;
+  if (buildCommand !== undefined && flags.artifacts.length === 0) {
+    throw new UsageError(
+      "--build-command requires --artifact: the paths the build produces for the release.",
+    );
+  }
+  if (buildCommand === undefined && flags.artifacts.length > 0) {
+    throw new UsageError("--artifact requires --build-command.");
+  }
+  return {
+    versionFiles: [...new Set(flags.versionFiles)],
+    ...(buildCommand === undefined
+      ? {}
+      : {
+          build: {
+            command: buildCommand,
+            artifacts: [...new Set(flags.artifacts)],
+          },
+        }),
+  };
+}
+
+export function parsePublishArguments(
+  argv: string[],
+): { dryRun: boolean } & ReleaseOptions {
+  const values = [...argv];
+  const flags: ReleaseFlags = { versionFiles: [], artifacts: [] };
+  let dryRun = false;
+  while (values.length > 0) {
+    const value = values.shift();
+    if (value === "--dry-run") dryRun = true;
+    else if (!takeReleaseFlag(value, values, flags)) {
+      throw new UsageError(`Unknown argument: ${value}`);
+    }
+  }
+  return { dryRun, ...releaseOptions(flags) };
 }
 
 export function parseSyncArguments(argv: string[]): {
   version?: string;
   tag?: string;
+  versionFiles: string[];
 } {
   const values = [...argv];
+  const flags: ReleaseFlags = { versionFiles: [], artifacts: [] };
   let version: string | undefined;
   let tag: string | undefined;
   while (values.length > 0) {
@@ -190,14 +320,22 @@ export function parseSyncArguments(argv: string[]): {
     } else if (value === "--tag") {
       tag = values.shift();
       if (!tag) throw new UsageError("--tag requires a release tag.");
-    } else throw new UsageError(`Unknown argument: ${value}`);
+    } else if (!takeReleaseFlag(value, values, flags)) {
+      throw new UsageError(`Unknown argument: ${value}`);
+    }
   }
   if (version !== undefined && tag !== undefined) {
     throw new UsageError("Use either --version or --tag, not both.");
   }
+  if (flags.buildCommand !== undefined || flags.artifacts.length > 0) {
+    throw new UsageError(
+      "release sync does not build: it cannot move the tag of a release already published, as one published on the Releases page is. Build output reaches a release through release publish.",
+    );
+  }
   return {
     ...(version === undefined ? {} : { version }),
     ...(tag === undefined ? {} : { tag }),
+    versionFiles: releaseOptions(flags).versionFiles,
   };
 }
 
@@ -226,19 +364,14 @@ function readNotesConfig(): NotesConfig {
 }
 
 /**
- * Set the root package version in the given checkout of main to `version`
- * and push the commit to main. Returns false when main already carries it.
+ * Commit the staged changes of the checkout with hooks off. The checkout may
+ * have no node_modules, so the commit-msg hook's commitlint cannot run there;
+ * the messages follow the convention it checks.
  */
-function bumpAndPush(workTree: string, version: string): boolean {
-  const file = path.join(workTree, "package.json");
-  const manifest = readFileSync(file, "utf8");
-  if (currentVersion(manifest) === version) return false;
-  writeFileSync(file, bumpedManifest(manifest, version));
-  git(["add", "package.json"], workTree);
-  // The checkout may have no node_modules, so the commit-msg hook's
-  // commitlint cannot run there; bumpMessage follows the convention it
-  // checks.
-  const [subject, body] = bumpMessage(version, readNotesConfig().tagPrefix);
+function commitStaged(
+  workTree: string,
+  [subject, body]: [string, string],
+): void {
   git(
     [
       "-c",
@@ -252,24 +385,151 @@ function bumpAndPush(workTree: string, version: string): boolean {
     ],
     workTree,
   );
-  git(["push", "origin", "HEAD:refs/heads/main"], workTree);
+}
+
+/**
+ * Set the version in package.json and the given version files of the checkout
+ * of main to `version` in one commit. Every file is read and rewritten in
+ * memory first, so one that is missing or has no top-level version fails
+ * before any file is written. Returns false when every file already carries
+ * the version.
+ */
+function commitVersion(
+  workTree: string,
+  version: string,
+  versionFiles: string[],
+): boolean {
+  const updates = new Map<string, string>();
+  const manifest = readFileSync(path.join(workTree, "package.json"), "utf8");
+  if (currentVersion(manifest) !== version) {
+    updates.set("package.json", bumpedManifest(manifest, version));
+  }
+  for (const file of versionFiles) {
+    const location = path.join(workTree, file);
+    if (!existsSync(location)) {
+      throw new Error(`The version file ${file} does not exist.`);
+    }
+    const source = readFileSync(location, "utf8");
+    const bumped = bumpedVersionFile(file, source, version);
+    if (bumped !== source) updates.set(file, bumped);
+  }
+  if (updates.size === 0) return false;
+  for (const [file, content] of updates) {
+    writeFileSync(path.join(workTree, file), content);
+  }
+  git(["add", "--", ...updates.keys()], workTree);
+  commitStaged(workTree, bumpMessage(version, readNotesConfig().tagPrefix));
   return true;
+}
+
+/** Push `commit` of the checkout to main. */
+function pushMain(workTree: string, commit: string): void {
+  git(["push", "origin", `${commit}:refs/heads/main`], workTree);
+}
+
+/**
+ * Set the version in the given checkout of main to `version` and push the
+ * commit to main. Returns false when main already carries it.
+ */
+function bumpAndPush(
+  workTree: string,
+  version: string,
+  versionFiles: string[],
+): boolean {
+  const committed = commitVersion(workTree, version, versionFiles);
+  if (committed) pushMain(workTree, "HEAD");
+  return committed;
+}
+
+// Variables that hold a token or reach the runner's token service.
+const BUILD_WITHHELD_VARIABLES = /^(?:GH_TOKEN|GITHUB_TOKEN|ACTIONS_.*)$/;
+// Fails at once, so a git started by the build cannot push through the ssh
+// command the checkout's git config names (the release deploy key).
+const BUILD_SSH_COMMAND = "false";
+
+/**
+ * The environment the build runs in: this process's without the tokens of the
+ * job and with no way to authenticate git over ssh, so a script that a
+ * dependency runs while installing cannot push or call GitHub as the job.
+ * REPOSITORY_ROOT names the checkout the build runs in.
+ */
+export function buildEnvironment(
+  env: NodeJS.ProcessEnv,
+  workTree: string,
+): NodeJS.ProcessEnv {
+  return {
+    ...Object.fromEntries(
+      Object.entries(env).filter(
+        ([name]) => !BUILD_WITHHELD_VARIABLES.test(name),
+      ),
+    ),
+    GIT_SSH_COMMAND: BUILD_SSH_COMMAND,
+    REPOSITORY_ROOT: workTree,
+  };
+}
+
+/**
+ * Run the build in the checkout, its output going to this process's, and
+ * commit its artifacts, which main ignores, on top of the checkout's head.
+ * Returns the release commit. The build gets no credentials (see
+ * buildEnvironment), and the repository root a command run by it sees is the
+ * checkout, not the one this process works on.
+ */
+function commitBuild(
+  workTree: string,
+  version: string,
+  { command, artifacts }: BuildStep,
+): string {
+  console.log(`Building: ${command}`);
+  try {
+    execFileSync("sh", ["-c", command], {
+      cwd: workTree,
+      env: buildEnvironment(process.env, workTree),
+      stdio: "inherit",
+    });
+  } catch (error) {
+    const status = (error as { status?: number | null }).status;
+    throw new Error(
+      `The build command exited with ${status ?? "a signal"}: ${command}`,
+      { cause: error },
+    );
+  }
+  for (const artifact of artifacts) {
+    if (!existsSync(path.join(workTree, artifact))) {
+      throw new Error(`The build did not produce ${artifact}.`);
+    }
+  }
+  git(["add", "--force", "--", ...artifacts], workTree);
+  if (!git(["diff", "--cached", "--name-only"], workTree)) {
+    throw new Error(
+      `The build left nothing to commit in ${artifacts.join(", ")}.`,
+    );
+  }
+  commitStaged(workTree, releaseMessage(version, readNotesConfig().tagPrefix));
+  return git(["rev-parse", "HEAD"], workTree);
 }
 
 /**
  * Set the version on main to `version` in a temporary worktree of `base`, so
- * the checked-out branch is left alone. Returns whether a commit was pushed
- * and the commit main then ends at.
+ * the checked-out branch is left alone. With a build, the release commit that
+ * adds its artifacts to the version commit is made there too; it is left out
+ * of main, and the caller tags it. The build runs before anything is pushed,
+ * so a failing one leaves main as it is. Returns whether a commit was pushed,
+ * the commit main then ends at, and the release commit when there is one.
  */
-function bumpMain(
+export function bumpMain(
   base: string,
   version: string,
-): { pushed: boolean; head: string } {
+  { versionFiles, build }: ReleaseOptions,
+): { pushed: boolean; head: string; release?: string } {
   const workTree = mkdtempSync(path.join(tmpdir(), "release-"));
   try {
     git(["worktree", "add", "--detach", workTree, base]);
-    const pushed = bumpAndPush(workTree, version);
-    return { pushed, head: git(["rev-parse", "HEAD"], workTree) };
+    const pushed = commitVersion(workTree, version, versionFiles);
+    const head = git(["rev-parse", "HEAD"], workTree);
+    const release = build && commitBuild(workTree, version, build);
+    if (pushed) pushMain(workTree, head);
+    return { pushed, head, ...(release === undefined ? {} : { release }) };
   } finally {
     try {
       git(["worktree", "remove", "--force", workTree]);
@@ -295,7 +555,9 @@ function readDraft(repository: string): { version: string; draft: Release } {
  * main to commit in; a version lower than main's is left alone, so a release
  * published for an older line does not move main back. Without them, the
  * draft is read from GitHub and the commit is made in a temporary worktree,
- * so the checked-out branch is left alone.
+ * so the checked-out branch is left alone. The files given with
+ * --version-file get the version in the same commit. It never builds: a
+ * release published on the Releases page has its tag already.
  */
 export function sync(argv: string[]): void {
   const args = parseSyncArguments(argv);
@@ -309,7 +571,7 @@ export function sync(argv: string[]): void {
       console.log(`main is at ${current}, past ${given}; left as it is.`);
       return;
     }
-    const pushed = bumpAndPush(repositoryRoot(), given);
+    const pushed = bumpAndPush(repositoryRoot(), given, args.versionFiles);
     console.log(
       pushed
         ? `Set the version to ${given} on main.`
@@ -321,7 +583,9 @@ export function sync(argv: string[]): void {
   const { version, draft } = readDraft(getRepositoryName());
   console.log(`Draft release: ${draft.name} (${draft.tag_name})`);
   git(["fetch", "origin", "main"]);
-  const { pushed } = bumpMain(git(["rev-parse", "origin/main"]), version);
+  const { pushed } = bumpMain(git(["rev-parse", "origin/main"]), version, {
+    versionFiles: args.versionFiles,
+  });
   console.log(
     pushed
       ? `Set the version to ${version} on main. Publish with repo-kit release publish.`
@@ -338,15 +602,74 @@ function targetCommit(target: string): string {
   ]);
 }
 
+/** Set a step output of the running workflow job, when there is one. */
+function setOutput(name: string, value: string): void {
+  const file = process.env.GITHUB_OUTPUT;
+  if (file) appendFileSync(file, `${name}=${value}\n`);
+}
+
+/**
+ * What to do when publishing the draft failed after its tag was pushed. The
+ * request may have gone through before the failure, and deleting the tag of a
+ * published release would break it, so the release is checked first.
+ */
+export function tagPushedMessage(repository: string, tag: string): string {
+  return [
+    `Pushed the tag ${tag}, but publishing the draft failed.`,
+    `Check the release first: gh release view ${tag} --repo ${repository} --json isDraft`,
+    "If it is published, leave the tag as it is.",
+    `Only if it is still a draft, delete the tag before publishing again: git push origin :refs/tags/${tag}`,
+  ].join("\n");
+}
+
+/**
+ * Publish the draft on `head`, the commit main ends at. With a release commit,
+ * no branch holds it, so the tag is pushed on it first to make it reachable
+ * for GitHub; the release then uses that tag. A failure to publish after the
+ * push leaves the tag, which the next run would refuse, so the error names it.
+ */
+function publishDraft(
+  repository: string,
+  draft: Release,
+  head: string,
+  release: string | undefined,
+): Release {
+  const endpoint = `/repos/${repository}/releases/${draft.id}`;
+  if (release === undefined) {
+    return api<Release>("PATCH", endpoint, {
+      target_commitish: head,
+      draft: false,
+    })!;
+  }
+  git(["push", "origin", `${release}:refs/tags/${draft.tag_name}`]);
+  console.log(
+    `Tagged ${draft.tag_name} on the release commit (${release.slice(0, 7)}) above ${head.slice(0, 7)}.`,
+  );
+  try {
+    return api<Release>("PATCH", endpoint, {
+      tag_name: draft.tag_name,
+      target_commitish: release,
+      draft: false,
+    })!;
+  } catch (error) {
+    throw new Error(
+      `${tagPushedMessage(repository, draft.tag_name)}\n${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
+}
+
 /**
  * Publish the draft release: set the version on main to the draft's with a
  * commit, then publish the draft on that commit, so the tag names a commit
- * that carries its version. It refuses while main has changes the draft does
- * not list yet, which the redraft after CI passes on main catches up on.
- * --dry-run checks and prints what it would do, without doing it.
+ * that carries its version. With --build-command and --artifact, the tag names
+ * a release commit above that one instead, which adds the build's artifacts.
+ * It refuses while main has changes the draft does not list yet, which the
+ * redraft after CI passes on main catches up on. --dry-run checks and prints
+ * what it would do, without doing it.
  */
 export function publish(argv: string[]): void {
-  const { dryRun } = parsePublishArguments(argv);
+  const { dryRun, ...options } = parsePublishArguments(argv);
   const repository = process.env.GITHUB_REPOSITORY ?? getRepositoryName();
   const { version, draft } = readDraft(repository);
   console.log(`Draft release: ${draft.name} (${draft.tag_name})`);
@@ -384,20 +707,27 @@ export function publish(argv: string[]): void {
     console.log(
       `Would set the version on main (${base.slice(0, 7)}) to ${version} and publish ${draft.tag_name} on it.`,
     );
+    if (options.versionFiles.length > 0) {
+      console.log(
+        `Would set the version in ${options.versionFiles.join(", ")} too.`,
+      );
+    }
+    if (options.build) {
+      console.log(
+        `Would build with \`${options.build.command}\` and tag ${draft.tag_name} on a release commit that adds ${options.build.artifacts.join(", ")} to it.`,
+      );
+    }
     return;
   }
-  const { pushed, head } = bumpMain(base, version);
+  const { pushed, head, release } = bumpMain(base, version, options);
   console.log(
     pushed
       ? `Set the version to ${version} on main (${head.slice(0, 7)}).`
       : `main is already at ${version} (${head.slice(0, 7)}).`,
   );
-  const published = api<Release>(
-    "PATCH",
-    `/repos/${repository}/releases/${draft.id}`,
-    { target_commitish: head, draft: false },
-  )!;
+  const published = publishDraft(repository, draft, head, release);
   console.log(`Published ${published.html_url}`);
+  setOutput("tag", published.tag_name);
 }
 
 export function parseDraftArguments(argv: string[]): {
@@ -509,6 +839,20 @@ function latestReleaseTag(repository: string): string | undefined {
   }
 }
 
+/**
+ * The commits a release lists: those `target` reaches and the last release's
+ * tag does not. A tag on a release commit, which sits above a commit of main
+ * and is on no branch, still leaves out everything up to that commit of main
+ * and none after it.
+ */
+export function commitsInRange(
+  lastTag: string | undefined,
+  target: string,
+): Set<string> {
+  const range = lastTag ? `${lastTag}..${target}` : target;
+  return new Set(git(["rev-list", range]).split("\n").filter(Boolean));
+}
+
 function sinceDate(tag: string): string {
   const committed = new Date(git(["log", "-1", "--format=%cI", tag]));
   committed.setUTCDate(committed.getUTCDate() - SEARCH_MARGIN_DAYS);
@@ -578,11 +922,9 @@ export function draft(argv: string[]): void {
     );
   }
 
-  const range = lastTag ? `${lastTag}..${target}` : target;
-  const commits = new Set(git(["rev-list", range]).split("\n").filter(Boolean));
   const pullRequests = pullRequestsInRange(
     mergedPullRequests(repository, lastTag ? sinceDate(lastTag) : undefined),
-    commits,
+    commitsInRange(lastTag, target),
   );
   const changes = releaseChanges(pullRequests, config);
   if (!changes) {

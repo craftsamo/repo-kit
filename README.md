@@ -169,6 +169,35 @@ Changes collect in one draft release until you publish it.
   `main`, to the draft's, the given one or the one a release tag names, and
   never moves it back.
 
+Both also take options that are off by default:
+
+- `--version-file <path>` (repeatable) sets the top-level `version` of a
+  `.json`, `.yml` or `.yaml` file in the same commit as `package.json`. The
+  value is replaced in place, so the rest of the file keeps its formatting; a
+  `version` key inside another object, or an indented `version:`, is left
+  alone, and a YAML file changes in its first document only. Paths inside
+  `.git` are refused. A file that is missing or has no top-level version fails the release
+  before anything is pushed.
+- `--build-command <command>` with `--artifact <path>` (repeatable; give both
+  or neither) is for `release publish` only. After the version commit, it runs
+  the command with `sh -c` in the temporary checkout of `main`, which has no
+  installed dependencies, so the command installs them. The command runs
+  without `GH_TOKEN`, `GITHUB_TOKEN` and `ACTIONS_*` variables, and with
+  `GIT_SSH_COMMAND=false`, so a script that a dependency runs while installing
+  cannot push or call GitHub as the job; the release deploy key file is still
+  on the runner's disk during the build, so keep the build's dependencies
+  trusted. It then commits the
+  artifacts, files or directories that `main` ignores, in a
+  `chore(release): build <version>` commit above the version commit. That
+  commit is pushed as the release's tag and to no branch, so `main` keeps no
+  build output while the tag carries it. A failing build or an artifact the
+  build did not produce fails before anything is pushed. `release sync` refuses
+  both options: a release published on the Releases page already has its tag,
+  which cannot move, so build output needs `release publish`.
+
+When `GITHUB_OUTPUT` is set, `release publish` writes the published tag to it
+as `tag`.
+
 The notes come from `.github/release-notes.json`. Without one, every pull
 request goes under one section as a patch, tags are `v<version>`, and a
 `skip-changelog` label leaves a pull request out. With one, each category
@@ -223,6 +252,22 @@ jobs:
 Secrets are passed by name, since `secrets: inherit` works only within an
 organization or enterprise. `setup github` allows each workflow your
 repository calls, as it reads them from your workflows.
+
+`release-publish.yml` takes inputs for the options of `release publish`, all
+empty or off by default:
+
+| Input               | Meaning                                                                                |
+| ------------------- | -------------------------------------------------------------------------------------- |
+| `version-files`     | `--version-file` for each file, one per line or comma-separated                        |
+| `build-command`     | `--build-command`; set it with `artifacts`                                             |
+| `artifacts`         | `--artifact` for each path, one per line or comma-separated                            |
+| `setup-pnpm`        | runs `corepack enable` so the build can use the pnpm your repository pins              |
+| `node-version-file` | file in your repository naming the Node.js version the build runs on (24.x by default) |
+
+Its `tag` output is the tag of the release published from the Actions tab, for
+a job that publishes the package from it; its header shows one. A release
+published on the Releases page runs `release sync` with `version-files`, skips
+the build with a warning, and has no `tag` output.
 
 ### `/oc` agents
 
