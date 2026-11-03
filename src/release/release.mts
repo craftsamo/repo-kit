@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
@@ -46,14 +47,23 @@ export interface Release {
   target_commitish: string;
 }
 
+/** A command that builds the files a release ships, and where they end up. */
+export interface BuildStep {
+  command: string;
+  artifacts: string[];
+}
+
 /** What a release does besides setting the version in package.json. */
 export interface ReleaseOptions {
   /** Files, relative to the repository root, whose top-level version is set. */
   versionFiles: string[];
+  /** Run after the version commit; its artifacts go into the release commit. */
+  build?: BuildStep;
 }
 
 const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const BUMP_SUBJECT_PREFIX = "chore(release): set the version to ";
+const RELEASE_SUBJECT_PREFIX = "chore(release): build ";
 
 /**
  * The version a draft release resolves to: its tag without the tag prefix.
@@ -117,6 +127,23 @@ export function bumpMessage(
     `The draft release names ${tagPrefix}${version} as the\n` +
       "next release. Publishing the draft tags main, so the tagged commit\n" +
       "names the version it releases.",
+  ];
+}
+
+/**
+ * The subject and body of the release commit, which adds the build output to
+ * the version commit. Made with hooks off like the version commit, so the
+ * tests hold it to the commitlint rules too.
+ */
+export function releaseMessage(
+  version: string,
+  tagPrefix: string,
+): [string, string] {
+  return [
+    `${RELEASE_SUBJECT_PREFIX}${version}`,
+    `The release ${tagPrefix}${version} tags this commit, which adds the\n` +
+      "build output the release ships to its parent on main.\n" +
+      "Main does not track that output.",
   ];
 }
 
@@ -370,21 +397,95 @@ function bumpAndPush(
   return committed;
 }
 
+// Variables that hold a token or reach the runner's token service.
+const BUILD_WITHHELD_VARIABLES = /^(?:GH_TOKEN|GITHUB_TOKEN|ACTIONS_.*)$/;
+// Fails at once, so a git started by the build cannot push through the ssh
+// command the checkout's git config names (the release deploy key).
+const BUILD_SSH_COMMAND = "false";
+
+/**
+ * The environment the build runs in: this process's without the tokens of the
+ * job and with no way to authenticate git over ssh, so a script that a
+ * dependency runs while installing cannot push or call GitHub as the job.
+ * REPOSITORY_ROOT names the checkout the build runs in.
+ */
+export function buildEnvironment(
+  env: NodeJS.ProcessEnv,
+  workTree: string,
+): NodeJS.ProcessEnv {
+  return {
+    ...Object.fromEntries(
+      Object.entries(env).filter(
+        ([name]) => !BUILD_WITHHELD_VARIABLES.test(name),
+      ),
+    ),
+    GIT_SSH_COMMAND: BUILD_SSH_COMMAND,
+    REPOSITORY_ROOT: workTree,
+  };
+}
+
+/**
+ * Run the build in the checkout, its output going to this process's, and
+ * commit its artifacts, which main ignores, on top of the checkout's head.
+ * Returns the release commit. The build gets no credentials (see
+ * buildEnvironment), and the repository root a command run by it sees is the
+ * checkout, not the one this process works on.
+ */
+function commitBuild(
+  workTree: string,
+  version: string,
+  { command, artifacts }: BuildStep,
+): string {
+  console.log(`Building: ${command}`);
+  try {
+    execFileSync("sh", ["-c", command], {
+      cwd: workTree,
+      env: buildEnvironment(process.env, workTree),
+      stdio: "inherit",
+    });
+  } catch (error) {
+    const status = (error as { status?: number | null }).status;
+    throw new Error(
+      `The build command exited with ${status ?? "a signal"}: ${command}`,
+      { cause: error },
+    );
+  }
+  for (const artifact of artifacts) {
+    if (!existsSync(path.join(workTree, artifact))) {
+      throw new Error(`The build did not produce ${artifact}.`);
+    }
+  }
+  git(["add", "--force", "--", ...artifacts], workTree);
+  if (!git(["diff", "--cached", "--name-only"], workTree)) {
+    throw new Error(
+      `The build left nothing to commit in ${artifacts.join(", ")}.`,
+    );
+  }
+  commitStaged(workTree, releaseMessage(version, readNotesConfig().tagPrefix));
+  return git(["rev-parse", "HEAD"], workTree);
+}
+
 /**
  * Set the version on main to `version` in a temporary worktree of `base`, so
- * the checked-out branch is left alone. Returns whether a commit was pushed
- * and the commit main then ends at.
+ * the checked-out branch is left alone. With a build, the release commit that
+ * adds its artifacts to the version commit is made there too; it is left out
+ * of main, and the caller tags it. The build runs before anything is pushed,
+ * so a failing one leaves main as it is. Returns whether a commit was pushed,
+ * the commit main then ends at, and the release commit when there is one.
  */
 export function bumpMain(
   base: string,
   version: string,
-  { versionFiles }: ReleaseOptions,
-): { pushed: boolean; head: string } {
+  { versionFiles, build }: ReleaseOptions,
+): { pushed: boolean; head: string; release?: string } {
   const workTree = mkdtempSync(path.join(tmpdir(), "release-"));
   try {
     git(["worktree", "add", "--detach", workTree, base]);
-    const pushed = bumpAndPush(workTree, version, versionFiles);
-    return { pushed, head: git(["rev-parse", "HEAD"], workTree) };
+    const pushed = commitVersion(workTree, version, versionFiles);
+    const head = git(["rev-parse", "HEAD"], workTree);
+    const release = build && commitBuild(workTree, version, build);
+    if (pushed) pushMain(workTree, head);
+    return { pushed, head, ...(release === undefined ? {} : { release }) };
   } finally {
     try {
       git(["worktree", "remove", "--force", workTree]);
@@ -632,6 +733,20 @@ function latestReleaseTag(repository: string): string | undefined {
   }
 }
 
+/**
+ * The commits a release lists: those `target` reaches and the last release's
+ * tag does not. A tag on a release commit, which sits above a commit of main
+ * and is on no branch, still leaves out everything up to that commit of main
+ * and none after it.
+ */
+export function commitsInRange(
+  lastTag: string | undefined,
+  target: string,
+): Set<string> {
+  const range = lastTag ? `${lastTag}..${target}` : target;
+  return new Set(git(["rev-list", range]).split("\n").filter(Boolean));
+}
+
 function sinceDate(tag: string): string {
   const committed = new Date(git(["log", "-1", "--format=%cI", tag]));
   committed.setUTCDate(committed.getUTCDate() - SEARCH_MARGIN_DAYS);
@@ -701,11 +816,9 @@ export function draft(argv: string[]): void {
     );
   }
 
-  const range = lastTag ? `${lastTag}..${target}` : target;
-  const commits = new Set(git(["rev-list", range]).split("\n").filter(Boolean));
   const pullRequests = pullRequestsInRange(
     mergedPullRequests(repository, lastTag ? sinceDate(lastTag) : undefined),
-    commits,
+    commitsInRange(lastTag, target),
   );
   const changes = releaseChanges(pullRequests, config);
   if (!changes) {

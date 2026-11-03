@@ -11,6 +11,7 @@ import {
   parseDraftArguments,
   parsePublishArguments,
   parseSyncArguments,
+  releaseMessage,
   unlistedCommits,
 } from "../../src/release/release.mts";
 import { UsageError } from "../../src/errors.mts";
@@ -106,6 +107,22 @@ describe("bumpMessage", () => {
       const [subject, body] = bumpMessage(version, "v");
       const header = /^chore\(release\): (.+)$/.exec(subject);
       assert.ok(header, subject);
+      assert.ok(header[1].length <= 50, `subject too long: ${header[1]}`);
+      assert.doesNotMatch(header[1], /^[A-Z]|\.$/);
+      assert.match(body, new RegExp(`v${version.replaceAll(".", "\\.")}`));
+      for (const line of body.split("\n")) {
+        assert.ok(line.length <= 72, `body line too long: ${line}`);
+      }
+    }
+  });
+});
+
+describe("releaseMessage", () => {
+  it("keeps to the commit convention, even for a long prerelease", () => {
+    for (const version of ["0.11.0", "10.20.30-beta.12"]) {
+      const [subject, body] = releaseMessage(version, "v");
+      assert.equal(subject, `chore(release): build ${version}`);
+      const header = /^chore\(release\): (.+)$/.exec(subject);
       assert.ok(header[1].length <= 50, `subject too long: ${header[1]}`);
       assert.doesNotMatch(header[1], /^[A-Z]|\.$/);
       assert.match(body, new RegExp(`v${version.replaceAll(".", "\\.")}`));
