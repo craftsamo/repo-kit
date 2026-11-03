@@ -212,6 +212,12 @@ members and collaborators can run them.
   order; without them, repo-kit's free defaults. `setup github` offers to set
   them and `setup secrets` the provider keys.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) to propose a change and
+[RELEASING.md](RELEASING.md) for how releases are made. Report a vulnerability
+privately, as [SECURITY.md](SECURITY.md) describes.
+
 ## License
 
 [MIT](LICENSE)
