@@ -1,0 +1,33 @@
+name: Feature request
+description: Propose a command, an option, a workflow or a workflow input.
+labels: [feature]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every option repo-kit adds is one more thing each repository that uses it can pass, so start from the problem rather than the option.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do in your repository, and what stops you today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Your proposal
+      description: What repo-kit would do, and what it would default to for repositories that do not ask for it.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: Workarounds, or other ways repo-kit could solve it.
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I would like to open the pull request for this.
