@@ -59,6 +59,36 @@ branch.
 | `--dry-run`               |                   | Show the changes without applying them                   |
 | `--yes`                   |                   | Apply without asking                                     |
 
+### `setup community`
+
+Writes the files a contributor looks for, once, the way GitHub adds a license:
+`CONTRIBUTING.md`, `SECURITY.md`, a pull request template, and issue forms for
+bugs, features and questions. After that they are yours to edit; the command
+never overwrites anything, and skips a file GitHub would already use for the
+same purpose in the root, `.github/` or `docs/`.
+
+The files carry what repo-kit can read from the repository:
+
+- Setup and checks from `package.json`: the package manager, `engines.node`,
+  and the `format:check`, `lint`, `typecheck`, `test` and `build` scripts
+- The commit convention, when most recent commits follow Conventional Commits
+- How each pull request label moves the version, when releases come from
+  `release draft`
+- A link to private vulnerability reporting, added when it is on, which
+  `setup github` turns on for public repositories, and on each issue form a
+  label the repository has
+
+What it cannot know, such as the supported versions in `SECURITY.md`, is left
+as a `<!-- TODO: … -->` comment, and the command lists them after writing.
+The issue forms turn off blank issues and link the README instead. Review the
+files and commit them.
+
+| Option           | Default |                                                                    |
+| ---------------- | ------- | ------------------------------------------------------------------ |
+| `--license <id>` |         | Also write a `LICENSE`, such as `mit`, with the year and the owner |
+| `--dry-run`      |         | Show the files without writing them                                |
+| `--yes`          |         | Write without asking                                               |
+
 ### `setup secrets`
 
 Sets secrets through `gh secret set`, so their values never pass through

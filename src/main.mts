@@ -45,6 +45,11 @@ export const commands: Record<string, Command> = {
     summary: "Apply repository settings, labels and main protection",
     load: () => import("./github/setup.mts"),
   },
+  "setup community": {
+    summary:
+      "Write CONTRIBUTING.md, SECURITY.md and issue and pull request templates",
+    load: () => import("./community/setup.mts"),
+  },
   "setup secrets": {
     summary: "Set provider keys or another repository or environment secret",
     load: () => import("./github/secrets.mts"),
