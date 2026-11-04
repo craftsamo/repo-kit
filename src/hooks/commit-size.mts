@@ -16,41 +16,92 @@ export const DEFAULT_EXCLUDED_PATHS: ReadonlySet<string> = new Set([
   "yarn.lock",
 ]);
 
+export interface NumstatEntry {
+  readonly additions: number;
+  readonly deletions: number;
+  readonly path: string;
+}
+
 function isExcluded(path: string, excludedPaths: ReadonlySet<string>): boolean {
   const name = path.slice(path.lastIndexOf("/") + 1);
   return excludedPaths.has(path) || excludedPaths.has(name);
 }
 
+/**
+ * Parses NUL-separated `git diff --numstat -z -M` output into entries.
+ * For renamed or copied files, `path` is the new path.
+ */
+export function parseNumstat(numstat: string): NumstatEntry[] {
+  if (!numstat) return [];
+  const parts = numstat.split("\0");
+  if (parts.at(-1) === "") {
+    parts.pop();
+  }
+  const entries: NumstatEntry[] = [];
+  let index = 0;
+  while (index < parts.length) {
+    const chunk = parts[index]!;
+    const firstTab = chunk.indexOf("\t");
+    const secondTab = firstTab === -1 ? -1 : chunk.indexOf("\t", firstTab + 1);
+    if (firstTab === -1 || secondTab === -1) {
+      throw new Error(`Unexpected git numstat entry: ${chunk}`);
+    }
+    const additionsRaw = chunk.slice(0, firstTab);
+    const deletionsRaw = chunk.slice(firstTab + 1, secondTab);
+    const pathPart = chunk.slice(secondTab + 1);
+
+    let additions: number;
+    let deletions: number;
+    if (additionsRaw === "-" && deletionsRaw === "-") {
+      additions = 0;
+      deletions = 0;
+    } else if (/^\d+$/.test(additionsRaw) && /^\d+$/.test(deletionsRaw)) {
+      additions = Number.parseInt(additionsRaw, 10);
+      deletions = Number.parseInt(deletionsRaw, 10);
+    } else {
+      throw new Error(`Unexpected git numstat entry: ${chunk}`);
+    }
+
+    let path: string;
+    if (pathPart === "") {
+      if (index + 2 >= parts.length) {
+        throw new Error("Unexpected git numstat entry: incomplete rename");
+      }
+      path = parts[index + 2]!;
+      index += 3;
+    } else {
+      path = pathPart;
+      index += 1;
+    }
+
+    entries.push({ additions, deletions, path });
+  }
+  return entries;
+}
+
+function toEntries(
+  numstat: string | readonly NumstatEntry[],
+): readonly NumstatEntry[] {
+  return typeof numstat === "string" ? parseNumstat(numstat) : numstat;
+}
+
 /** The lines `git diff --numstat` reports, without excluded and binary files. */
 export function countChangedLines(
-  numstat: string,
+  numstat: string | readonly NumstatEntry[],
   excludedPaths: ReadonlySet<string> = DEFAULT_EXCLUDED_PATHS,
 ): number {
   let changedLines = 0;
-  for (const line of numstat.split("\n")) {
-    if (!line) continue;
-    const [additions, deletions, path] = line.split("\t");
-    if (path === undefined) {
-      throw new Error(`Unexpected git numstat line: ${line}`);
-    }
-    if (isExcluded(path, excludedPaths)) continue;
-    if (additions === "-" && deletions === "-") continue;
-    const additionCount = Number.parseInt(additions ?? "", 10);
-    const deletionCount = Number.parseInt(deletions ?? "", 10);
-    if (!Number.isInteger(additionCount) || !Number.isInteger(deletionCount)) {
-      throw new Error(`Unexpected git numstat line: ${line}`);
-    }
-    changedLines += additionCount + deletionCount;
+  for (const entry of toEntries(numstat)) {
+    if (isExcluded(entry.path, excludedPaths)) continue;
+    changedLines += entry.additions + entry.deletions;
   }
   return changedLines;
 }
 
-export function numstatPaths(numstat: string): string[] {
-  return numstat
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => line.split("\t")[2])
-    .filter((path): path is string => path !== undefined);
+export function numstatPaths(
+  numstat: string | readonly NumstatEntry[],
+): string[] {
+  return toEntries(numstat).map((entry) => entry.path);
 }
 
 /**
@@ -69,7 +120,7 @@ export function generatedPaths(checkAttrOutput: string): Set<string> {
 }
 
 export function evaluateCommitSize(
-  numstat: string,
+  numstat: string | readonly NumstatEntry[],
   maxChangedLines: number = DEFAULT_MAX_CHANGED_LINES,
   excludedPaths: ReadonlySet<string> = DEFAULT_EXCLUDED_PATHS,
 ): { changedLines: number; maxChangedLines: number; passes: boolean } {
@@ -112,9 +163,11 @@ export function run(argv: string[]): void {
     "diff",
     "--cached",
     "--numstat",
-    "--no-renames",
+    "-z",
+    "-M",
   ]);
-  const paths = numstatPaths(numstat);
+  const entries = parseNumstat(numstat);
+  const paths = numstatPaths(entries);
   // --cached reads .gitattributes from the index, so the attributes being
   // committed decide, not uncommitted edits to them.
   const generated = paths.length
@@ -127,7 +180,7 @@ export function run(argv: string[]): void {
       )
     : new Set<string>();
   const result = evaluateCommitSize(
-    numstat,
+    entries,
     maxChangedLines,
     new Set([...DEFAULT_EXCLUDED_PATHS, ...generated]),
   );

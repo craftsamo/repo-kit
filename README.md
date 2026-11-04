@@ -127,8 +127,9 @@ own there. Run it after every install:
 ### `check commit-size`
 
 A pre-commit check that fails when the staged changes exceed 500 reviewable
-changed lines, so commits stay small enough to review. Lockfiles, binary
-files and files marked `linguist-generated` in `.gitattributes` do not count.
+changed lines, so commits stay small enough to review. A moved or renamed file
+counts only the lines that changed in it. Lockfiles, binary files and files
+marked `linguist-generated` in `.gitattributes` do not count.
 `--max <lines>` or `MAX_COMMIT_CHANGED_LINES` sets another limit.
 
 ```sh
