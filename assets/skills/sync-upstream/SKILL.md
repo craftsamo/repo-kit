@@ -1,7 +1,7 @@
 ---
 name: sync-upstream
 description: |-
-  Use when bringing upstream changes into this fork, or into a repository created from a template that has an `upstream` remote, and resolving the resulting conflicts (取り込む / リベース / 追従 / 同期 / 移植). Picks the mode from the history and how `main` is shared: merge through a pull request when other people work on `main` (nothing is force-pushed), rebase when only you push to it, or port upstream's changes commit by commit when the repository shares no history with upstream. Covers the ours/theirs sides of each mode, the three conflict buckets (textual / type-ripple / silent drift), a coupling audit for fork-only surfaces, verification, and landing. Trigger keywords: "upstream", "sync upstream", "sync fork", "merge upstream", "rebase", "force push", "merge conflict", "fork", "template", "cherry-pick", "取り込む", "リベース", "追従", "同期", "移植". Not for sending a change to upstream (open a pull request there) or deciding which layer of a fork chain a change belongs in (fork-layer-placement).
+  Use when bringing upstream changes into this fork, or into a repository created from a template that has an `upstream` remote, and resolving the resulting conflicts (取り込む / リベース / 追従 / 同期 / 移植). Picks the mode from the history and how `main` is shared: merge through a pull request when other people work on `main` (nothing is force-pushed), rebase when only you push to it, or port upstream's changes commit by commit when the repository shares no history with upstream; a coordinated rebase when a shared fork insists on one. Covers the ours/theirs sides of each mode, the three conflict buckets (textual / type-ripple / silent drift), a coupling audit for fork-only surfaces, verification, and landing. Trigger keywords: "upstream", "sync upstream", "sync fork", "merge upstream", "rebase", "force push", "merge conflict", "fork", "template", "cherry-pick", "取り込む", "リベース", "追従", "同期", "移植". Not for sending a change to upstream, or choosing the fork layer a change belongs in (fork-layer-placement).
 license: MIT
 compatibility: opencode
 metadata:
@@ -98,10 +98,14 @@ Pick the mode and report it with the signals that decided it:
 - Every signal was checked and none holds → **rebase**:
   [references/rebase.md](references/rebase.md).
 
-An explicit choice from the user wins over the signals — a shared `main` is
-never rebased without one — with two exceptions: a repository without a base
-can only be ported, and once `main` holds an upstream merge, stay on merge,
-since rebasing would rewrite history others already have.
+An explicit choice from the user wins over the signals, except that:
+
+- a repository without a base can only be ported;
+- once `main` holds an upstream merge, it stays on merge, since rebasing would
+  rewrite history others already have.
+
+A shared `main` is rebased only when the user explicitly asks for it, and then
+only through [references/shared-rebase.md](references/shared-rebase.md).
 
 ### 3. Sync
 
@@ -166,7 +170,8 @@ Follow the chosen reference's landing step: the buckets decide the path.
 
 <AntiPatterns>
 
-- Do NOT rebase or force-push a shared `main` — merge through a pull request.
+- Do NOT rebase or force-push a shared `main` — merge through a pull request,
+  or, when the user explicitly asks for a rebase, follow shared-rebase.md.
 - Do NOT `git pull` upstream into `main`, or merge it locally and push `main`:
   a merge sync lands only through its pull request.
 - Do NOT switch a fork that has synced by merge back to rebase.

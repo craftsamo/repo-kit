@@ -24,8 +24,11 @@ fork, as step 1 of the skill names it):
   is empty or includes `merge`.
 
 If either fails, STOP and ask the user. The ways forward are theirs to pick:
-allow merge commits (at least for sync pull requests), or rebase `main` with
-everyone's agreement. Do not land the sync as a squash or rebase merge to get
+change the setting or rule that failed — allow merge commits, or lift the
+linear-history or merge-method rule for sync pull requests (a ruleset bypass
+can do this) — or rebase `main` with everyone's agreement
+([shared-rebase.md](shared-rebase.md)), which needs force pushes to `main`
+allowed instead. Do not land the sync as a squash or rebase merge to get
 around the rule: both turn upstream's commits into new ones, so `main` loses
 its common history with upstream and every later sync conflicts with the same
 changes again.
