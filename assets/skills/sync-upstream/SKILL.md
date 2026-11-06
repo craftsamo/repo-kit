@@ -136,13 +136,15 @@ conflict-resolution commit.
 ### 5. Coupling audit (bucket 3 — the checks cannot see this)
 
 1. Compute YOUR fork-only surfaces (don't hardcode):
-   `FORK_ONLY=$(git diff --diff-filter=A --name-only upstream/main HEAD)`
+   `git diff --diff-filter=A --name-only upstream/main HEAD`
 2. What upstream changed in shared coupling surfaces:
    `git diff $BASE..upstream/main --stat` # shared packages, configs, env, docs
    (port: `$SYNC..$TARGET`, see its reference)
 3. For each changed shared symbol/convention (a shared type/constant shape, an env
    var name, a doc convention), grep your fork-only surfaces for stale refs:
-   `git grep -n "<symbol-or-name>" -- $FORK_ONLY`
+   `git diff -z --diff-filter=A --name-only upstream/main HEAD | xargs -0 -r git grep -n "<symbol-or-name>" --`
+   (`-z` keeps unusual paths intact, and `-r` skips the grep when there are no
+   fork-only files instead of searching the whole tree)
 4. Compiles green but now inconsistent (stale docs, old env name, outdated contract
    impl) = bucket 3 → schedule a follow-up PR.
 
