@@ -1,7 +1,8 @@
 # Rebase mode
 
 Replay this fork's commits on top of the latest `upstream/main`. Rebasing
-rewrites `main`, so every landing path ends in a force push.
+rewrites `main`, so every landing path ends in a force push: use this mode only
+when step 2 of the skill found that no one else builds on `main`.
 
 ## 1. Backup (recovery point)
 

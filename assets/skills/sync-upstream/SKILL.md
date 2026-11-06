@@ -1,7 +1,7 @@
 ---
 name: sync-upstream
 description: |-
-  Use when incorporating upstream changes into this fork via git rebase and resolving the resulting conflicts (取り込む / リベース / 追従). Covers fetch upstream, a backup tag, the rebase ours/theirs swap, the three conflict buckets (textual / type-ripple / silent drift), a coupling audit for fork-only surfaces, verification with the repository's checks, and the two landing paths (direct-to-main vs follow-up PR). Trigger keywords: "upstream", "rebase", "sync upstream", "merge conflict", "fork", "取り込む", "リベース", "追従".
+  Use when bringing upstream changes into this fork and resolving the resulting conflicts (取り込む / リベース / 追従 / 同期). Picks the mode from how `main` is shared: merge through a pull request when other people work on `main` (nothing is force-pushed), or rebase when only you push to it. Covers fetch upstream, the ours/theirs sides of each mode, the three conflict buckets (textual / type-ripple / silent drift), a coupling audit for fork-only surfaces, verification with the repository's checks, and landing. Trigger keywords: "upstream", "sync upstream", "sync fork", "merge upstream", "rebase", "force push", "merge conflict", "fork", "取り込む", "リベース", "追従", "同期". Not for sending a change to upstream (open a pull request there) or deciding which layer of a fork chain a change belongs in (fork-layer-placement).
 license: MIT
 compatibility: opencode
 metadata:
@@ -12,18 +12,19 @@ metadata:
 
 <Goal>
 
-Replay this fork's commits on top of the latest `upstream/main`, classify what
-the sync touched (textual conflict vs. ripple vs. silent drift), resolve/land it
-on the correct path, and preserve a faithful, recoverable history — keep
-upstream's merge topology intact rather than flattening it.
+Bring the latest `upstream/main` into this fork's `main` without breaking
+anyone else's work: pick the mode that fits who shares `main`, classify what
+the sync touched (textual conflict vs. ripple vs. silent drift), land it on the
+correct path, and keep a faithful, recoverable history the next sync can build
+on — upstream's merge topology intact rather than flattened.
 
 </Goal>
 
 <Scope>
 
 - Remotes: `origin` = this fork, `upstream` = the repo this fork tracks
-  (`git remote get-url upstream`). Rebase always uses this git remote — not any
-  read-only mirror your tooling may keep for browsing the upstream.
+  (`git remote get-url upstream`). Syncing always uses this git remote — not
+  any read-only mirror your tooling may keep for browsing the upstream.
 - Layer-agnostic: this fork may itself be the upstream of another fork. "upstream"
   always = whatever the git `upstream` remote points to. Each layer derives its
   own surfaces — do not hardcode app/package names.
@@ -41,36 +42,85 @@ upstream's merge topology intact rather than flattening it.
 
 ### 1. Preflight
 
-1. Clean tree — never rebase a dirty tree: `git status` (stash/commit first).
+1. Clean tree — never sync a dirty tree: `git status` (stash/commit first).
 2. Ensure the remote exists: `git remote get-url upstream` (else
    `git remote add upstream <url>`).
-3. `git switch main`.
-4. `git fetch upstream`.
-5. Record the base: `BASE=$(git merge-base HEAD upstream/main)`.
+3. `git fetch origin && git fetch upstream`.
+4. `git switch main && git merge --ff-only origin/main`. If it fails, local
+   `main` holds commits `origin` does not: find out why before syncing.
+5. Record the base: `BASE=$(git merge-base origin/main upstream/main)`.
 6. Preview:
    - incoming: `git log --oneline $BASE..upstream/main`
-   - replayed: `git log --oneline upstream/main..HEAD`
-   - divergence: `git rev-list --left-right --count HEAD...upstream/main`
+   - fork-only commits: `git log --oneline upstream/main..origin/main`
+   - divergence: `git rev-list --left-right --count origin/main...upstream/main`
 
-### 2. Sync
+### 2. Choose the mode
 
-Follow [references/rebase.md](references/rebase.md) steps 1–3: the backup
-tag, the rebase, and its conflicts, where the ours/theirs sides are swapped.
+Rebasing rewrites `main`: everyone else's clones, branches and open pull
+requests built on it then point at commits that no longer exist. Rebase only a
+`main` you are sure no one else builds on.
 
-### 3. Classify — the three buckets (this decides the landing path)
+Run every `gh` command against the fork. With an `upstream` remote, `gh` may
+resolve the repository to upstream, so name it from `origin`:
 
-| Bucket                   | What                                                                                                                                                     | Detect with                                         | Path           |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- | -------------- |
-| 1. Textual conflict      | overlapping edits (`<<<<<<<`)                                                                                                                            | git marks them during rebase                        | resolve inline |
-| 2. Type/behaviour ripple | clean apply, but types/build/tests break                                                                                                                 | the repository's typecheck, build and test commands | follow-up PR   |
-| 3. Silent drift          | clean apply, checks green, but a fork-only surface is stale (e.g. a fork-only doc section, or an env var the fork introduced that upstream just renamed) | coupling audit (step 4) + review                    | follow-up PR   |
+```sh
+REPO=$(git remote get-url origin | sed -E 's#\.git$##; s#^.*[:/]([^/]+/[^/]+)$#\1#')
+```
+
+and pass it on: `gh api repos/$REPO/...`, `gh pr ... -R "$REPO"`.
+
+`main` is **shared** when any of these signals holds, or when you cannot
+check one of them:
+
+| Signal                                 | Check                                                                                                                                                                                                                                                        |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Upstream was already synced by a merge | a merge on `main`'s first-parent line whose second parent upstream holds: for each `<merge> <p1> <p2>` of `git log --first-parent --merges --format='%h %p' $BASE..origin/main`, `git merge-base --is-ancestor <p2> upstream/main`                           |
+| Someone else committed to `main`       | `git log --format='%ae' $BASE..origin/main \| sort -u` lists an address other than yours (`git config user.email`), bots aside                                                                                                                               |
+| A pull request targets `main`          | `gh pr list -R "$REPO" --base main --state open` lists any, yours included — a rebase pulls its base out from under it                                                                                                                                       |
+| Rules protect `main`                   | `gh api repos/$REPO/rules/branches/main --jq '.[].type'` lists `pull_request`, `non_fast_forward` or `required_linear_history`, or `gh api repos/$REPO/branches/main/protection` answers (404, or a 403 saying the plan lacks branch protection, means none) |
+| Other people can push                  | the owner is an organization, or `gh api repos/$REPO/collaborators --jq '.[].login'` lists a login other than yours (`gh api user --jq .login`)                                                                                                              |
+| Others build on the fork               | `gh api repos/$REPO --jq .forks_count` is more than 0: forks of this fork rebase or merge onto its `main`                                                                                                                                                    |
+
+Signals only show who can be seen. Before a rebase, also ask the user to
+confirm that nobody else builds on `main`, such as a clone or a deployment you
+cannot see.
+
+Pick the mode and report it with the signals that decided it:
+
+- `main` is shared → **merge**: [references/merge.md](references/merge.md).
+- Every signal was checked and none holds → **rebase**:
+  [references/rebase.md](references/rebase.md).
+
+An explicit choice from the user wins over the signals — a shared `main` is
+never rebased without one — with one exception: once `main` holds an upstream
+merge, stay on merge, since rebasing would rewrite history others already have.
+
+### 3. Sync
+
+Follow the chosen reference up to its landing step. The conflict sides depend
+on the mode:
+
+| Mode   | `--ours` / `HEAD`                              | `--theirs`                     | Back out             |
+| ------ | ---------------------------------------------- | ------------------------------ | -------------------- |
+| merge  | this fork (the sync branch cut from `main`)    | upstream                       | `git merge --abort`  |
+| rebase | `upstream/main` + the already-replayed commits | the fork commit being replayed | `git rebase --abort` |
+
+Never blanket `-X ours` / `-X theirs` across a whole sync.
+
+### 4. Classify — the three buckets (this decides the landing path)
+
+| Bucket                   | What                                                                                                                                                     | Detect with                                         | Handled by                         |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- | ---------------------------------- |
+| 1. Textual conflict      | overlapping edits (`<<<<<<<`)                                                                                                                            | git marks them during the sync                      | resolving the conflict             |
+| 2. Type/behaviour ripple | clean apply, but types/build/tests break                                                                                                                 | the repository's typecheck, build and test commands | a fix commit — where, per the mode |
+| 3. Silent drift          | clean apply, checks green, but a fork-only surface is stale (e.g. a fork-only doc section, or an env var the fork introduced that upstream just renamed) | coupling audit (step 5) + review                    | a follow-up PR                     |
 
 Conflict vs. follow-up: if git put a marker on it → conflict resolution
 (reconcile the overlapping lines, add NO new behavior). If it applied cleanly but
 is now inconsistent → follow-up implementation. Do NOT fold follow-up work into a
 conflict-resolution commit.
 
-### 4. Coupling audit (bucket 3 — the checks cannot see this)
+### 5. Coupling audit (bucket 3 — the checks cannot see this)
 
 1. Compute YOUR fork-only surfaces (don't hardcode):
    `FORK_ONLY=$(git diff --diff-filter=A --name-only upstream/main HEAD)`
@@ -85,10 +135,9 @@ conflict-resolution commit.
 Semi-mechanical: diff + grep + judgment. The checks never flag prose/semantic/
 runtime-string drift.
 
-### 5. Land
+### 6. Land
 
-Follow [references/rebase.md](references/rebase.md) step 4: the buckets pick
-Path 1 (direct to main) or Path 2 (follow-up PR).
+Follow the chosen reference's landing step: the buckets decide the path.
 
 </Steps>
 
@@ -96,16 +145,24 @@ Path 1 (direct to main) or Path 2 (follow-up PR).
 
 - The repository's build, lint, typecheck and test commands — green clears
   bucket 2.
-- Run the coupling audit (step 4) even when green — bucket 3 is invisible to
+- Run the coupling audit (step 5) even when green — bucket 3 is invisible to
   the checks.
+- After landing, `git fetch origin` and
+  `git merge-base origin/main upstream/main` is the upstream commit you synced
+  to, so the next sync starts from there.
 
 </Verify>
 
 <AntiPatterns>
 
-- Do NOT `git pull` on main — it creates a merge; this flow is rebase-only.
-- Do NOT blanket `-X ours` / `-X theirs` an entire rebase.
-- Do NOT rebase a dirty tree.
+- Do NOT rebase or force-push a shared `main` — merge through a pull request.
+- Do NOT `git pull` upstream into `main`, or merge it locally and push `main`:
+  a merge sync lands only through its pull request.
+- Do NOT switch a fork that has synced by merge back to rebase.
+- Do NOT squash- or rebase-merge a sync pull request — both turn upstream's
+  commits into new ones, and the next sync conflicts with the same changes again.
+- Do NOT blanket `-X ours` / `-X theirs` an entire sync.
+- Do NOT sync a dirty tree.
 - Checks green ≠ done — always run the coupling audit for fork-only drift (bucket 3).
 - Do NOT fold follow-up implementation into a conflict-resolution commit.
 - Do NOT hardcode fork-only paths — compute them (`git diff --diff-filter=A`).
