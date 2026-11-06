@@ -10,7 +10,7 @@ from then on.
 ## 1. Check that the sync can land
 
 Before doing any work, confirm `main` accepts a merge commit (`$REPO` is the
-fork, as step 2 of the skill names it):
+fork, as step 1 of the skill names it):
 
 - Merge commits are allowed: `gh api repos/$REPO --jq .allow_merge_commit` is
   `true`. `null` means you cannot see the setting: ask.
