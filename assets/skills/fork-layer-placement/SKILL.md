@@ -81,9 +81,12 @@ Before implementing, confirm the chosen layer:
   branch higher won't inherit it (the sibling-fork trap).
 - Duplicating the same file across layers — guarantees add/add conflicts on every
   sync.
-- "Moving" something with a delete-commit in a fork — on the next rebase the
+- "Moving" something with a delete-commit in a fork — on the next sync the
   delete removes the inherited copy. Instead add at the correct layer and let the
-  redundant copy reconcile via `git rebase --skip` (see `sync-upstream`).
+  redundant copy reconcile in the next sync (see `sync-upstream`): skip the
+  fork's commit in a rebase (`git rebase --skip`), resolve the add/add conflict
+  to upstream's version in a merge, or record the change as already present in
+  a port.
 - Putting layer-specific tooling at the generic root — dead weight there,
   irrelevant to siblings that lack the capability.
 - Treating app features as "shared" — they belong in the fork that uses them.
